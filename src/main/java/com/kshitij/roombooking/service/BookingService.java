@@ -112,18 +112,25 @@ public class BookingService {
             for (int i = 0; i < 5; i++) {
                 List<WebElement> availableSlots = driver.findElements(By.className("s-lc-eq-avail"));
 
-                if (!availableSlots.isEmpty()) {
-                    WebElement firstSlot = availableSlots.get(0);
-                    bookedSlotInfo = firstSlot.getAttribute("aria-label");
-                    logger.info("Clicked on first available timeslot: {}", bookedSlotInfo);
+                for (WebElement slot : availableSlots) {
+                    String label = slot.getAttribute("aria-label");
+                    // Prioritize 11:30 slots
+                    if (label != null && label.contains("11:30")) {
+                        bookedSlotInfo = label;
+                        logger.info("Found preferred 11:30 timeslot: {}", bookedSlotInfo);
 
-                    js.executeScript(
-                            "arguments[0].scrollIntoView({behavior: 'auto', block: 'center', inline: 'center'});",
-                            firstSlot);
-                    wait.until(ExpectedConditions.elementToBeClickable(firstSlot));
-                    firstSlot.click();
-                    Thread.sleep(1000);
-                    slotFound = true;
+                        js.executeScript(
+                                "arguments[0].scrollIntoView({behavior: 'auto', block: 'center', inline: 'center'});",
+                                slot);
+                        wait.until(ExpectedConditions.elementToBeClickable(slot));
+                        slot.click();
+                        Thread.sleep(1000);
+                        slotFound = true;
+                        break;
+                    }
+                }
+
+                if (slotFound) {
                     break;
                 }
 
