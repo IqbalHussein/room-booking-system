@@ -1,0 +1,57 @@
+name: Nightly Room Booking
+
+on:
+  schedule:
+    # Runs at 05:01 UTC (approx 12:01 AM EST) every day
+    - cron: '01 05 * * *'
+  workflow_dispatch:
+    # Allows manual trigger from GitHub UI
+
+jobs:
+  book-room:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Build Docker Image
+        run: docker build -t roombooking .
+
+      - name: Run Container & Trigger Booking
+        env:
+          BOOKING_USERNAME: ${{ secrets.BOOKING_USERNAME }}
+          BOOKING_PASSWORD: ${{ secrets.BOOKING_PASSWORD }}
+        run: |
+          # Start container in background
+          docker run -d --name booking-service \
+            -p 8080:8080 \
+            -e BOOKING_USERNAME="$BOOKING_USERNAME" \
+            -e BOOKING_PASSWORD="$BOOKING_PASSWORD" \
+            roombooking
+
+          # Wait for Spring Boot to start (health check loop)
+          echo "Waiting for service to start..."
+          for i in {1..30}; do
+            if curl -s http://localhost:8080/api/v1/book > /dev/null; then
+              echo "Service is up!"
+              break
+            fi
+            echo "Waiting..."
+            sleep 2
+          done
+
+          # Trigger the booking
+          echo "Triggering booking process..."
+          RESPONSE=$(curl -X POST http://localhost:8080/api/v1/book)
+          
+          echo "Booking Response: $RESPONSE"
+          
+          # Check for success
+          if [[ "$RESPONSE" == *"Success"* ]]; then
+            echo "Booking completed successfully."
+          else
+            echo "Booking failed or returned unexpected response."
+            docker logs booking-service
+            exit 1
+          fi
