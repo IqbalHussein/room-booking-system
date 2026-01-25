@@ -86,6 +86,15 @@ public class BookingService {
             LocalDate oneWeekFromNow = today.plusDays(7);
             String nextWeekDate = String.valueOf(oneWeekFromNow.getDayOfMonth());
 
+            // Check if we need to switch month
+            if (oneWeekFromNow.getMonth() != today.getMonth()) {
+                logger.info("Target date is in the next month. Switching calendar view...");
+                WebElement nextMonthBtn = wait.until(ExpectedConditions.elementToBeClickable(
+                        By.cssSelector("div.datepicker-days th.next")));
+                nextMonthBtn.click();
+                Thread.sleep(500); // Allow animation to complete
+            }
+
             // Select next week's date
             List<WebElement> allDates = wait.until(ExpectedConditions.presenceOfAllElementsLocatedBy(
                     By.xpath("//td[contains(@class, 'day')]")));
