@@ -81,16 +81,15 @@ public class BookingService {
                         slot.click();
                         Thread.sleep(1000);
 
-                        // Check if 3-hour duration is available
-                        if (has3HourOption(driver, wait)) {
+                        // Check if 3-hour duration is available (11:30 + 3hr = 2:30pm)
+                        if (has3HourDuration(driver, wait, "11:30")) {
                             bookedSlotInfo = label;
                             logger.info("3-hour option available! Booking: {}", bookedSlotInfo);
-                            select3HourOption(driver, wait);
+                            select3HourDuration(driver, wait, "11:30");
                             slotFound = true;
                             break;
                         } else {
                             logger.info("3-hour not available in {}. Trying next room...", roomName);
-                            // Need to deselect - navigate away
                             break; // Exit slot loop, try next room
                         }
                     }
@@ -111,50 +110,57 @@ public class BookingService {
                     navigateToRoom(driver, wait, js, roomName);
                     navigateToDate(driver, wait, today, targetDate);
 
+                    // Get fresh slot list and find slots after 11:30
                     List<WebElement> availableSlots = driver.findElements(By.className("s-lc-eq-avail"));
 
-                    // Sort slots by time to find earliest after 11:30
-                    List<WebElement> slotsAfter1130 = new ArrayList<>();
+                    // Build list of slot times after 11:30
+                    List<String> slotTimes = new ArrayList<>();
                     for (WebElement slot : availableSlots) {
                         String label = slot.getAttribute("aria-label");
                         if (label != null) {
                             String time = extractTime(label);
                             if (time != null && convertToMinutes(time) > 690) { // After 11:30
-                                slotsAfter1130.add(slot);
+                                slotTimes.add(time);
                             }
                         }
                     }
 
                     // Sort by time
-                    slotsAfter1130.sort((a, b) -> {
-                        String timeA = extractTime(a.getAttribute("aria-label"));
-                        String timeB = extractTime(b.getAttribute("aria-label"));
-                        return convertToMinutes(timeA) - convertToMinutes(timeB);
-                    });
+                    slotTimes.sort((a, b) -> convertToMinutes(a) - convertToMinutes(b));
 
-                    for (WebElement slot : slotsAfter1130) {
-                        String label = slot.getAttribute("aria-label");
-                        logger.info("Trying slot: {}", label);
-
-                        js.executeScript(
-                                "arguments[0].scrollIntoView({behavior: 'auto', block: 'center', inline: 'center'});",
-                                slot);
-                        wait.until(ExpectedConditions.elementToBeClickable(slot));
-                        slot.click();
-                        Thread.sleep(1000);
-
-                        if (has3HourOption(driver, wait)) {
-                            bookedSlotInfo = label;
-                            logger.info("3-hour option available! Booking: {}", bookedSlotInfo);
-                            select3HourOption(driver, wait);
-                            slotFound = true;
+                    // Try each slot time
+                    for (String slotTime : slotTimes) {
+                        if (slotFound)
                             break;
-                        } else {
-                            logger.info("3-hour not available for this slot. Trying next...");
-                            // Deselect by clicking again or navigating
-                            navigateToRoom(driver, wait, js, roomName);
-                            navigateToDate(driver, wait, today, targetDate);
-                            availableSlots = driver.findElements(By.className("s-lc-eq-avail"));
+
+                        // Re-find the slot element (fresh reference)
+                        navigateToRoom(driver, wait, js, roomName);
+                        navigateToDate(driver, wait, today, targetDate);
+
+                        List<WebElement> freshSlots = driver.findElements(By.className("s-lc-eq-avail"));
+                        for (WebElement slot : freshSlots) {
+                            String label = slot.getAttribute("aria-label");
+                            if (label != null
+                                    && label.toLowerCase().contains(slotTime.replace("am", "").replace("pm", ""))) {
+                                logger.info("Trying slot: {}", label);
+
+                                js.executeScript(
+                                        "arguments[0].scrollIntoView({behavior: 'auto', block: 'center', inline: 'center'});",
+                                        slot);
+                                wait.until(ExpectedConditions.elementToBeClickable(slot));
+                                slot.click();
+                                Thread.sleep(1000);
+
+                                if (has3HourDuration(driver, wait, slotTime)) {
+                                    bookedSlotInfo = label;
+                                    logger.info("3-hour option available! Booking: {}", bookedSlotInfo);
+                                    select3HourDuration(driver, wait, slotTime);
+                                    slotFound = true;
+                                } else {
+                                    logger.info("3-hour not available for {}. Trying next slot...", slotTime);
+                                }
+                                break; // Found the slot element, move on
+                            }
                         }
                     }
                 }
@@ -219,38 +225,27 @@ public class BookingService {
         }
     }
 
-    private boolean has3HourOption(WebDriver driver, WebDriverWait wait) {
+    private boolean has3HourDuration(WebDriver driver, WebDriverWait wait, String startTime) {
         try {
             WebElement dropdownElement = wait.until(ExpectedConditions.presenceOfElementLocated(By.tagName("select")));
             Select dropdown = new Select(dropdownElement);
             List<WebElement> options = dropdown.getOptions();
 
+            int startMins = convertToMinutes(startTime);
+            int targetEndMins = startMins + REQUIRED_DURATION_MINUTES; // 3 hours later
+
+            logger.info("Start time: {} ({}min), need end time at {}min or later", startTime, startMins, targetEndMins);
+
             for (WebElement option : options) {
-                String text = option.getText().toLowerCase();
-                // Look for "180" minutes or "3 hour" text
-                if (text.contains("180") || text.contains("3 hour")) {
-                    logger.info("Found 3-hour option: {}", option.getText());
-                    return true;
-                }
-            }
-
-            // Also check if the last option is at least 180 minutes
-            // Options are usually like "30 minutes", "60 minutes", etc.
-            String lastOptionText = options.get(options.size() - 1).getText();
-            logger.info("Last duration option: {}", lastOptionText);
-
-            // Parse minutes from text like "180 minutes" or "3 hours"
-            if (lastOptionText.toLowerCase().contains("180") ||
-                    lastOptionText.toLowerCase().contains("3 hour")) {
-                return true;
-            }
-
-            // Try to extract number
-            java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+)").matcher(lastOptionText);
-            if (m.find()) {
-                int minutes = Integer.parseInt(m.group(1));
-                if (minutes >= REQUIRED_DURATION_MINUTES) {
-                    return true;
+                String optionText = option.getText().toLowerCase();
+                String endTime = extractTime(optionText);
+                if (endTime != null) {
+                    int endMins = convertToMinutes(endTime);
+                    logger.info("Option: {} -> end time {} ({}min)", optionText, endTime, endMins);
+                    if (endMins >= targetEndMins) {
+                        logger.info("Found 3hr+ option: {}", option.getText());
+                        return true;
+                    }
                 }
             }
 
@@ -261,23 +256,30 @@ public class BookingService {
         }
     }
 
-    private void select3HourOption(WebDriver driver, WebDriverWait wait) throws InterruptedException {
+    private void select3HourDuration(WebDriver driver, WebDriverWait wait, String startTime)
+            throws InterruptedException {
         WebElement dropdownElement = wait.until(ExpectedConditions.presenceOfElementLocated(By.tagName("select")));
         Select dropdown = new Select(dropdownElement);
         List<WebElement> options = dropdown.getOptions();
 
-        // Find and select the 3-hour (180 min) option, or the maximum available
+        int startMins = convertToMinutes(startTime);
+        int targetEndMins = startMins + REQUIRED_DURATION_MINUTES;
+
+        // Find the option that gives exactly 3 hours or closest to it
         int bestIndex = -1;
-        int maxMinutes = 0;
+        int bestDiff = Integer.MAX_VALUE;
 
         for (int i = 0; i < options.size(); i++) {
-            String text = options.get(i).getText().toLowerCase();
-            java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+)").matcher(text);
-            if (m.find()) {
-                int minutes = Integer.parseInt(m.group(1));
-                if (minutes >= REQUIRED_DURATION_MINUTES && minutes > maxMinutes) {
-                    maxMinutes = minutes;
-                    bestIndex = i;
+            String optionText = options.get(i).getText().toLowerCase();
+            String endTime = extractTime(optionText);
+            if (endTime != null) {
+                int endMins = convertToMinutes(endTime);
+                if (endMins >= targetEndMins) {
+                    int diff = endMins - targetEndMins;
+                    if (diff < bestDiff) {
+                        bestDiff = diff;
+                        bestIndex = i;
+                    }
                 }
             }
         }
@@ -402,6 +404,7 @@ public class BookingService {
     private int convertToMinutes(String time) {
         if (time == null)
             return 0;
+        time = time.toLowerCase();
         boolean isPM = time.contains("pm");
         time = time.replace("am", "").replace("pm", "");
         String[] parts = time.split(":");
