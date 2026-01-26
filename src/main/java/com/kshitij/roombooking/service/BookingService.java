@@ -121,25 +121,40 @@ public class BookingService {
             for (int i = 0; i < 5; i++) {
                 List<WebElement> availableSlots = driver.findElements(By.className("s-lc-eq-avail"));
 
+                // First, try to find a preferred 11:30 slot
+                WebElement preferredSlot = null;
+                WebElement fallbackSlot = null;
+
                 for (WebElement slot : availableSlots) {
                     String label = slot.getAttribute("aria-label");
-                    // Prioritize 11:30 slots
-                    if (label != null && label.contains("11:30")) {
-                        bookedSlotInfo = label;
-                        logger.info("Found preferred 11:30 timeslot: {}", bookedSlotInfo);
-
-                        js.executeScript(
-                                "arguments[0].scrollIntoView({behavior: 'auto', block: 'center', inline: 'center'});",
-                                slot);
-                        wait.until(ExpectedConditions.elementToBeClickable(slot));
-                        slot.click();
-                        Thread.sleep(1000);
-                        slotFound = true;
-                        break;
+                    if (label != null) {
+                        if (label.contains("11:30")) {
+                            preferredSlot = slot;
+                            break; // Found preferred slot, stop searching
+                        } else if (fallbackSlot == null) {
+                            fallbackSlot = slot; // Keep first available as fallback
+                        }
                     }
                 }
 
-                if (slotFound) {
+                // Use preferred slot if available, otherwise use fallback
+                WebElement slotToBook = (preferredSlot != null) ? preferredSlot : fallbackSlot;
+
+                if (slotToBook != null) {
+                    bookedSlotInfo = slotToBook.getAttribute("aria-label");
+                    if (preferredSlot != null) {
+                        logger.info("Found preferred 11:30 timeslot: {}", bookedSlotInfo);
+                    } else {
+                        logger.info("No 11:30 slot available. Using fallback slot: {}", bookedSlotInfo);
+                    }
+
+                    js.executeScript(
+                            "arguments[0].scrollIntoView({behavior: 'auto', block: 'center', inline: 'center'});",
+                            slotToBook);
+                    wait.until(ExpectedConditions.elementToBeClickable(slotToBook));
+                    slotToBook.click();
+                    Thread.sleep(1000);
+                    slotFound = true;
                     break;
                 }
 
@@ -152,6 +167,16 @@ public class BookingService {
 
                 LocalDate targetDate = oneWeekFromNow.plusDays(i + 1);
                 String dayText = String.valueOf(targetDate.getDayOfMonth());
+
+                // Navigate to the correct month if target date is in a different month than
+                // today
+                if (targetDate.getMonth() != today.getMonth()) {
+                    logger.info("Target date {} is in next month, navigating calendar...", targetDate);
+                    WebElement nextMonthBtn = wait.until(ExpectedConditions.elementToBeClickable(
+                            By.cssSelector("div.datepicker-days th.next")));
+                    nextMonthBtn.click();
+                    Thread.sleep(500);
+                }
 
                 List<WebElement> datesHandler = wait.until(ExpectedConditions.presenceOfAllElementsLocatedBy(
                         By.xpath(
