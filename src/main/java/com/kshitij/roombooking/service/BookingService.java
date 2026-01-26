@@ -66,14 +66,24 @@ public class BookingService {
                 throw new Exception("No rooms found on the page.");
             }
 
-            // Click first available room
-            WebElement firstRoom = roomLinks.get(0);
-            String roomName = firstRoom.getText();
-            logger.info("Clicked on room: {}", roomName);
+            // Prefer room 324A, fallback to first available
+            WebElement targetRoom = null;
+            for (WebElement room : roomLinks) {
+                if (room.getText().contains("324A")) {
+                    targetRoom = room;
+                    break;
+                }
+            }
+            if (targetRoom == null) {
+                targetRoom = roomLinks.get(0); // Fallback to first room if 324A not found
+            }
+
+            String roomName = targetRoom.getText();
+            logger.info("Selected room: {}", roomName);
             js.executeScript("arguments[0].scrollIntoView({behavior: 'auto', block: 'center', inline: 'center'});",
-                    firstRoom);
-            wait.until(ExpectedConditions.elementToBeClickable(firstRoom));
-            firstRoom.click();
+                    targetRoom);
+            wait.until(ExpectedConditions.elementToBeClickable(targetRoom));
+            targetRoom.click();
 
             Thread.sleep(1000);
 
@@ -122,38 +132,26 @@ public class BookingService {
             for (int i = 0; i < 5; i++) {
                 List<WebElement> availableSlots = driver.findElements(By.className("s-lc-eq-avail"));
 
-                // First, try to find a preferred 11:30 slot
-                WebElement preferredSlot = null;
-                WebElement fallbackSlot = null;
+                // ONLY look for 11:30 slots - no fallback
+                WebElement slot1130 = null;
 
                 for (WebElement slot : availableSlots) {
                     String label = slot.getAttribute("aria-label");
-                    if (label != null) {
-                        if (label.contains("11:30")) {
-                            preferredSlot = slot;
-                            break; // Found preferred slot, stop searching
-                        } else if (fallbackSlot == null) {
-                            fallbackSlot = slot; // Keep first available as fallback
-                        }
+                    if (label != null && label.contains("11:30")) {
+                        slot1130 = slot;
+                        break;
                     }
                 }
 
-                // Use preferred slot if available, otherwise use fallback
-                WebElement slotToBook = (preferredSlot != null) ? preferredSlot : fallbackSlot;
-
-                if (slotToBook != null) {
-                    bookedSlotInfo = slotToBook.getAttribute("aria-label");
-                    if (preferredSlot != null) {
-                        logger.info("Found preferred 11:30 timeslot: {}", bookedSlotInfo);
-                    } else {
-                        logger.info("No 11:30 slot available. Using fallback slot: {}", bookedSlotInfo);
-                    }
+                if (slot1130 != null) {
+                    bookedSlotInfo = slot1130.getAttribute("aria-label");
+                    logger.info("Found 11:30 timeslot: {}", bookedSlotInfo);
 
                     js.executeScript(
                             "arguments[0].scrollIntoView({behavior: 'auto', block: 'center', inline: 'center'});",
-                            slotToBook);
-                    wait.until(ExpectedConditions.elementToBeClickable(slotToBook));
-                    slotToBook.click();
+                            slot1130);
+                    wait.until(ExpectedConditions.elementToBeClickable(slot1130));
+                    slot1130.click();
                     Thread.sleep(1000);
                     slotFound = true;
                     break;
