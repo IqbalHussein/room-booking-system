@@ -14,7 +14,6 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.time.LocalDate;
-import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,6 +43,8 @@ public class BookingService {
 
             WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(15));
             JavascriptExecutor js = (JavascriptExecutor) driver;
+            LocalDate today = LocalDate.now();
+            LocalDate targetDate = today.plusDays(7);
 
             // Click "book study rooms"
             WebElement bookStudyRoomsLink = wait.until(ExpectedConditions.elementToBeClickable(
@@ -57,106 +58,115 @@ public class BookingService {
                 Thread.sleep(1000);
             }
 
-            // Get all room links and prioritize 324A
-            List<WebElement> allRoomLinks = wait.until(ExpectedConditions.presenceOfAllElementsLocatedBy(
+            // Get all room links
+            List<WebElement> roomLinks = wait.until(ExpectedConditions.presenceOfAllElementsLocatedBy(
                     By.xpath("//a[contains(@href, '/space/')]")));
 
-            if (allRoomLinks.isEmpty()) {
+            if (roomLinks.isEmpty()) {
                 throw new Exception("No rooms found on the page.");
             }
 
-            // Reorder: 324A first, then others
-            List<WebElement> orderedRooms = new ArrayList<>();
-            WebElement room324A = null;
-            for (WebElement room : allRoomLinks) {
-                if (room.getText().contains("324A")) {
-                    room324A = room;
-                } else {
-                    orderedRooms.add(room);
+            // Find 324A or use first room
+            WebElement targetRoom = null;
+            int room324AIndex = -1;
+            for (int i = 0; i < roomLinks.size(); i++) {
+                if (roomLinks.get(i).getText().contains("324A")) {
+                    targetRoom = roomLinks.get(i);
+                    room324AIndex = i;
+                    break;
                 }
             }
-            if (room324A != null) {
-                orderedRooms.add(0, room324A); // Put 324A first
+            if (targetRoom == null) {
+                targetRoom = roomLinks.get(0);
+                room324AIndex = 0;
             }
 
-            LocalDate today = LocalDate.now();
-            LocalDate oneWeekFromNow = today.plusDays(7);
             String bookedSlotInfo = "";
             boolean slotFound = false;
 
-            // PHASE 1: Try to find 11:30 slot in any room (324A first)
-            logger.info("PHASE 1: Searching for 11:30 slot across all rooms...");
-            for (WebElement room : orderedRooms) {
-                String roomName = room.getText();
-                logger.info("Checking room: {}", roomName);
+            // Try 324A first
+            String roomName = targetRoom.getText();
+            logger.info("Trying preferred room: {}", roomName);
+            js.executeScript("arguments[0].scrollIntoView({behavior: 'auto', block: 'center', inline: 'center'});",
+                    targetRoom);
+            wait.until(ExpectedConditions.elementToBeClickable(targetRoom));
+            targetRoom.click();
+            Thread.sleep(1000);
 
-                js.executeScript("arguments[0].scrollIntoView({behavior: 'auto', block: 'center', inline: 'center'});",
-                        room);
-                wait.until(ExpectedConditions.elementToBeClickable(room));
-                room.click();
-                Thread.sleep(1000);
+            // Navigate to target date
+            navigateToDate(driver, wait, today, targetDate);
 
-                // Navigate to target date
-                navigateToDate(driver, wait, js, today, oneWeekFromNow);
+            // Look for 11:30 slot first
+            List<WebElement> availableSlots = driver.findElements(By.className("s-lc-eq-avail"));
+            WebElement slot1130 = null;
+            WebElement bestSlotAfter1130 = null;
+            int bestTimeAfter1130 = Integer.MAX_VALUE;
 
-                // Check for 11:30 slot
-                List<WebElement> availableSlots = driver.findElements(By.className("s-lc-eq-avail"));
-                for (WebElement slot : availableSlots) {
-                    String label = slot.getAttribute("aria-label");
-                    if (label != null && label.contains("11:30")) {
-                        bookedSlotInfo = label;
-                        logger.info("Found 11:30 slot in {}: {}", roomName, bookedSlotInfo);
-                        js.executeScript(
-                                "arguments[0].scrollIntoView({behavior: 'auto', block: 'center', inline: 'center'});",
-                                slot);
-                        wait.until(ExpectedConditions.elementToBeClickable(slot));
-                        slot.click();
-                        Thread.sleep(1000);
-                        slotFound = true;
-                        break;
+            for (WebElement slot : availableSlots) {
+                String label = slot.getAttribute("aria-label");
+                if (label != null) {
+                    String time = extractTime(label);
+                    if (time != null) {
+                        int mins = convertToMinutes(time);
+                        if (label.contains("11:30")) {
+                            slot1130 = slot;
+                            break; // Found 11:30, stop
+                        } else if (mins > 11 * 60 + 30 && mins < bestTimeAfter1130) {
+                            // Track the earliest slot after 11:30
+                            bestTimeAfter1130 = mins;
+                            bestSlotAfter1130 = slot;
+                        }
                     }
-                }
-
-                if (slotFound)
-                    break;
-
-                // Go back to room list to try next room
-                driver.navigate().back();
-                Thread.sleep(1000);
-                driver.navigate().back();
-                Thread.sleep(1000);
-
-                // Re-scroll to load rooms again
-                for (int i = 0; i < 3; i++) {
-                    js.executeScript("window.scrollBy(0, 1000);");
-                    Thread.sleep(500);
-                }
-
-                // Refresh room list
-                allRoomLinks = wait.until(ExpectedConditions.presenceOfAllElementsLocatedBy(
-                        By.xpath("//a[contains(@href, '/space/')]")));
-                orderedRooms = new ArrayList<>();
-                room324A = null;
-                for (WebElement r : allRoomLinks) {
-                    if (r.getText().contains("324A")) {
-                        room324A = r;
-                    } else {
-                        orderedRooms.add(r);
-                    }
-                }
-                if (room324A != null) {
-                    orderedRooms.add(0, room324A);
                 }
             }
 
-            // PHASE 2: If no 11:30 found, find next available slot after 11:30 in 324A (or
-            // any room)
-            if (!slotFound) {
-                logger.info("PHASE 2: No 11:30 slot found. Looking for next available slot after 11:30...");
+            // Use 11:30 if found, otherwise use best slot after 11:30
+            WebElement slotToBook = (slot1130 != null) ? slot1130 : bestSlotAfter1130;
 
-                for (WebElement room : orderedRooms) {
-                    String roomName = room.getText();
-                    logger.info("Checking room for post-11:30 slot: {}", roomName);
+            if (slotToBook != null) {
+                bookedSlotInfo = slotToBook.getAttribute("aria-label");
+                if (slot1130 != null) {
+                    logger.info("Found 11:30 slot in {}: {}", roomName, bookedSlotInfo);
+                } else {
+                    logger.info("No 11:30 slot. Using next available in {}: {}", roomName, bookedSlotInfo);
+                }
+                js.executeScript("arguments[0].scrollIntoView({behavior: 'auto', block: 'center', inline: 'center'});",
+                        slotToBook);
+                wait.until(ExpectedConditions.elementToBeClickable(slotToBook));
+                slotToBook.click();
+                Thread.sleep(1000);
+                slotFound = true;
+            }
+
+            // If nothing found in 324A, go back and try other rooms
+            if (!slotFound) {
+                logger.info("No suitable slot in {}. Trying other rooms...", roomName);
+
+                // Go back to room list
+                driver.get("https://carletonu.libcal.com/");
+                Thread.sleep(1000);
+
+                bookStudyRoomsLink = wait.until(ExpectedConditions.elementToBeClickable(
+                        By.linkText("book study rooms on floors 2-5 in the library")));
+                bookStudyRoomsLink.click();
+                Thread.sleep(1000);
+
+                for (int i = 0; i < 5; i++) {
+                    js.executeScript("window.scrollBy(0, 1000);");
+                    Thread.sleep(1000);
+                }
+
+                roomLinks = wait.until(ExpectedConditions.presenceOfAllElementsLocatedBy(
+                        By.xpath("//a[contains(@href, '/space/')]")));
+
+                // Try each room (except 324A which we already tried)
+                for (int i = 0; i < roomLinks.size() && !slotFound; i++) {
+                    if (i == room324AIndex)
+                        continue; // Skip 324A
+
+                    WebElement room = roomLinks.get(i);
+                    roomName = room.getText();
+                    logger.info("Trying room: {}", roomName);
 
                     js.executeScript(
                             "arguments[0].scrollIntoView({behavior: 'auto', block: 'center', inline: 'center'});",
@@ -165,70 +175,69 @@ public class BookingService {
                     room.click();
                     Thread.sleep(1000);
 
-                    navigateToDate(driver, wait, js, today, oneWeekFromNow);
+                    navigateToDate(driver, wait, today, targetDate);
 
-                    // Find best slot after 11:30
-                    List<WebElement> availableSlots = driver.findElements(By.className("s-lc-eq-avail"));
-                    WebElement bestSlot = null;
-                    String bestTime = null;
+                    availableSlots = driver.findElements(By.className("s-lc-eq-avail"));
+                    slot1130 = null;
+                    bestSlotAfter1130 = null;
+                    bestTimeAfter1130 = Integer.MAX_VALUE;
 
                     for (WebElement slot : availableSlots) {
                         String label = slot.getAttribute("aria-label");
                         if (label != null) {
-                            // Extract time from label (format like "11:30am" or "12:00pm")
                             String time = extractTime(label);
-                            if (time != null && isAfter1130(time)) {
-                                if (bestTime == null || compareTime(time, bestTime) < 0) {
-                                    bestTime = time;
-                                    bestSlot = slot;
+                            if (time != null) {
+                                int mins = convertToMinutes(time);
+                                if (label.contains("11:30")) {
+                                    slot1130 = slot;
+                                    break;
+                                } else if (mins > 11 * 60 + 30 && mins < bestTimeAfter1130) {
+                                    bestTimeAfter1130 = mins;
+                                    bestSlotAfter1130 = slot;
                                 }
                             }
                         }
                     }
 
-                    if (bestSlot != null) {
-                        bookedSlotInfo = bestSlot.getAttribute("aria-label");
-                        logger.info("Found post-11:30 slot in {}: {}", roomName, bookedSlotInfo);
+                    slotToBook = (slot1130 != null) ? slot1130 : bestSlotAfter1130;
+
+                    if (slotToBook != null) {
+                        bookedSlotInfo = slotToBook.getAttribute("aria-label");
+                        if (slot1130 != null) {
+                            logger.info("Found 11:30 slot in {}: {}", roomName, bookedSlotInfo);
+                        } else {
+                            logger.info("Using next available in {}: {}", roomName, bookedSlotInfo);
+                        }
                         js.executeScript(
                                 "arguments[0].scrollIntoView({behavior: 'auto', block: 'center', inline: 'center'});",
-                                bestSlot);
-                        wait.until(ExpectedConditions.elementToBeClickable(bestSlot));
-                        bestSlot.click();
+                                slotToBook);
+                        wait.until(ExpectedConditions.elementToBeClickable(slotToBook));
+                        slotToBook.click();
                         Thread.sleep(1000);
                         slotFound = true;
-                        break;
-                    }
+                    } else {
+                        // Go back to try next room
+                        driver.get("https://carletonu.libcal.com/");
+                        Thread.sleep(1000);
 
-                    // Go back to try next room
-                    driver.navigate().back();
-                    Thread.sleep(1000);
-                    driver.navigate().back();
-                    Thread.sleep(1000);
+                        bookStudyRoomsLink = wait.until(ExpectedConditions.elementToBeClickable(
+                                By.linkText("book study rooms on floors 2-5 in the library")));
+                        bookStudyRoomsLink.click();
+                        Thread.sleep(1000);
 
-                    for (int i = 0; i < 3; i++) {
-                        js.executeScript("window.scrollBy(0, 1000);");
-                        Thread.sleep(500);
-                    }
-
-                    allRoomLinks = wait.until(ExpectedConditions.presenceOfAllElementsLocatedBy(
-                            By.xpath("//a[contains(@href, '/space/')]")));
-                    orderedRooms = new ArrayList<>();
-                    room324A = null;
-                    for (WebElement r : allRoomLinks) {
-                        if (r.getText().contains("324A")) {
-                            room324A = r;
-                        } else {
-                            orderedRooms.add(r);
+                        for (int j = 0; j < 5; j++) {
+                            js.executeScript("window.scrollBy(0, 1000);");
+                            Thread.sleep(1000);
                         }
-                    }
-                    if (room324A != null) {
-                        orderedRooms.add(0, room324A);
+
+                        roomLinks = wait.until(ExpectedConditions.presenceOfAllElementsLocatedBy(
+                                By.xpath("//a[contains(@href, '/space/')]")));
                     }
                 }
             }
 
             if (!slotFound) {
-                throw new Exception("No available time slots found in any room.");
+                throw new Exception("No available slots found in any room.");
             }
 
             // Duration Dropdown - select maximum
@@ -291,8 +300,8 @@ public class BookingService {
         }
     }
 
-    private void navigateToDate(WebDriver driver, WebDriverWait wait, JavascriptExecutor js,
-            LocalDate today, LocalDate targetDate) throws InterruptedException {
+    private void navigateToDate(WebDriver driver, WebDriverWait wait, LocalDate today, LocalDate targetDate)
+            throws InterruptedException {
         WebElement goToDateButton = wait.until(ExpectedConditions.elementToBeClickable(
                 By.xpath("//button[contains(text(), 'Go To Date')]")));
         goToDateButton.click();
@@ -320,7 +329,6 @@ public class BookingService {
     }
 
     private String extractTime(String label) {
-        // Extract time like "11:30am" or "12:00pm" from aria-label
         if (label == null)
             return null;
         java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d{1,2}:\\d{2}[ap]m)")
@@ -331,18 +339,7 @@ public class BookingService {
         return null;
     }
 
-    private boolean isAfter1130(String time) {
-        // Convert to 24h and check if >= 11:30
-        int mins = convertToMinutes(time);
-        return mins >= 11 * 60 + 30; // 11:30 = 690 minutes
-    }
-
-    private int compareTime(String time1, String time2) {
-        return convertToMinutes(time1) - convertToMinutes(time2);
-    }
-
     private int convertToMinutes(String time) {
-        // Convert "11:30am" or "1:00pm" to minutes since midnight
         boolean isPM = time.contains("pm");
         time = time.replace("am", "").replace("pm", "");
         String[] parts = time.split(":");
