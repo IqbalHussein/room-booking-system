@@ -119,7 +119,7 @@ public class BookingService {
                         String label = slot.getAttribute("aria-label");
                         if (label != null) {
                             String time = extractTime(label);
-                            if (time != null && convertToMinutes(time) > 690) { // After 11:30
+                            if (time != null && convertToMinutes(time) > 870) { // After 2:30
                                 slotTimes.add(time);
                             }
                         }
