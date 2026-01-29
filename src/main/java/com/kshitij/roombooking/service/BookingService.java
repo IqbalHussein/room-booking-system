@@ -56,13 +56,13 @@ public class BookingService {
 
             // ========== PHASE 1: Search ALL rooms for 11:30 slot with 3-hour availability
             // ==========
-            logger.info("PHASE 1: Searching for 11:30 slot with 3-hour availability...");
+            logger.info("PHASE 1: Searching for 2:30 slot with 3-hour availability...");
 
             for (String roomName : roomOrder) {
                 if (slotFound)
                     break;
 
-                logger.info("Checking room for 11:30 (3hr): {}", roomName);
+                logger.info("Checking room for 2:30 (3hr): {}", roomName);
 
                 navigateToRoom(driver, wait, js, roomName);
                 navigateToDate(driver, wait, today, targetDate);
@@ -71,8 +71,8 @@ public class BookingService {
                 List<WebElement> availableSlots = driver.findElements(By.className("s-lc-eq-avail"));
                 for (WebElement slot : availableSlots) {
                     String label = slot.getAttribute("aria-label");
-                    if (label != null && label.contains("11:30")) {
-                        logger.info("Found 11:30 slot, checking if 3hr available...");
+                    if (label != null && label.contains("2:30")) {
+                        logger.info("Found 2:30 slot, checking if 3hr available...");
 
                         js.executeScript(
                                 "arguments[0].scrollIntoView({behavior: 'auto', block: 'center', inline: 'center'});",
@@ -81,11 +81,11 @@ public class BookingService {
                         slot.click();
                         Thread.sleep(1000);
 
-                        // Check if 3-hour duration is available (11:30 + 3hr = 2:30pm)
-                        if (has3HourDuration(driver, wait, "11:30")) {
+                        // Check if 3-hour duration is available (2:30 + 3hr = 5:30pm)
+                        if (has3HourDuration(driver, wait, "2:30")) {
                             bookedSlotInfo = label;
                             logger.info("3-hour option available! Booking: {}", bookedSlotInfo);
-                            select3HourDuration(driver, wait, "11:30");
+                            select3HourDuration(driver, wait, "2:30");
                             slotFound = true;
                             break;
                         } else {
@@ -96,24 +96,24 @@ public class BookingService {
                 }
             }
 
-            // ========== PHASE 2: If no 11:30 with 3hr, find next slot after 11:30 with 3hr
+            // ========== PHASE 2: If no 2:30 with 3hr, find next slot after 2:30 with 3hr
             // ==========
             if (!slotFound) {
-                logger.info("PHASE 2: No 11:30 with 3hr. Looking for next available after 11:30 with 3hr...");
+                logger.info("PHASE 2: No 2:30 with 3hr. Looking for next available after 2:30 with 3hr...");
 
                 for (String roomName : roomOrder) {
                     if (slotFound)
                         break;
 
-                    logger.info("Checking room for post-11:30 (3hr): {}", roomName);
+                    logger.info("Checking room for post-2:30 (3hr): {}", roomName);
 
                     navigateToRoom(driver, wait, js, roomName);
                     navigateToDate(driver, wait, today, targetDate);
 
-                    // Get fresh slot list and find slots after 11:30
+                    // Get fresh slot list and find slots after 2:30
                     List<WebElement> availableSlots = driver.findElements(By.className("s-lc-eq-avail"));
 
-                    // Build list of slot times after 11:30
+                    // Build list of slot times after 2:30
                     List<String> slotTimes = new ArrayList<>();
                     for (WebElement slot : availableSlots) {
                         String label = slot.getAttribute("aria-label");
