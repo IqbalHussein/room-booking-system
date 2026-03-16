@@ -13,6 +13,7 @@ import org.openqa.selenium.support.ui.WebDriverWait;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -48,31 +49,46 @@ public class BookingService {
             LocalDate today = LocalDate.now();
             LocalDate targetDate = today.plusDays(7);
 
+            // Determine target start time based on day of week; skip weekends
+            DayOfWeek targetDay = targetDate.getDayOfWeek();
+            String preferredStartTime;
+            if (targetDay == DayOfWeek.SATURDAY || targetDay == DayOfWeek.SUNDAY) {
+                logger.info("Target date {} is a weekend ({}). Skipping booking.", targetDate, targetDay);
+                return "Skipped: No booking on weekends.";
+            } else if (targetDay == DayOfWeek.TUESDAY) {
+                preferredStartTime = "8:30";
+            } else if (targetDay == DayOfWeek.THURSDAY) {
+                preferredStartTime = "4:00";
+            } else {
+                // Monday, Wednesday, Friday
+                preferredStartTime = "2:30";
+            }
+            logger.info("Target date {} is a {} — using start time {}pm/am", targetDate, targetDay, preferredStartTime);
+
             String bookedSlotInfo = "";
             boolean slotFound = false;
 
             // Get room order (324A first)
             List<String> roomOrder = getRoomOrder(driver, wait, js);
 
-            // ========== PHASE 1: Search ALL rooms for 11:30 slot with 3-hour availability
-            // ==========
-            logger.info("PHASE 1: Searching for 2:30 slot with 3-hour availability...");
+            // ========== PHASE 1: Search ALL rooms for preferred slot with 3-hour availability ==========
+            logger.info("PHASE 1: Searching for {} slot with 3-hour availability...", preferredStartTime);
 
             for (String roomName : roomOrder) {
                 if (slotFound)
                     break;
 
-                logger.info("Checking room for 2:30 (3hr): {}", roomName);
+                logger.info("Checking room for {} (3hr): {}", preferredStartTime, roomName);
 
                 navigateToRoom(driver, wait, js, roomName);
                 navigateToDate(driver, wait, today, targetDate);
 
-                // Look for 11:30 slot
+                // Look for preferred start time slot
                 List<WebElement> availableSlots = driver.findElements(By.className("s-lc-eq-avail"));
                 for (WebElement slot : availableSlots) {
                     String label = slot.getAttribute("aria-label");
-                    if (label != null && label.contains("2:30")) {
-                        logger.info("Found 2:30 slot, checking if 3hr available...");
+                    if (label != null && label.contains(preferredStartTime)) {
+                        logger.info("Found {} slot, checking if 3hr available...", preferredStartTime);
 
                         js.executeScript(
                                 "arguments[0].scrollIntoView({behavior: 'auto', block: 'center', inline: 'center'});",
@@ -81,11 +97,11 @@ public class BookingService {
                         slot.click();
                         Thread.sleep(1000);
 
-                        // Check if 3-hour duration is available (2:30 + 3hr = 5:30pm)
-                        if (has3HourDuration(driver, wait, "2:30")) {
+                        // Check if 3-hour duration is available
+                        if (has3HourDuration(driver, wait, preferredStartTime)) {
                             bookedSlotInfo = label;
                             logger.info("3-hour option available! Booking: {}", bookedSlotInfo);
-                            select3HourDuration(driver, wait, "2:30");
+                            select3HourDuration(driver, wait, preferredStartTime);
                             slotFound = true;
                             break;
                         } else {
@@ -96,10 +112,9 @@ public class BookingService {
                 }
             }
 
-            // ========== PHASE 2: If no 2:30 with 3hr, find next slot after 2:30 with 3hr
-            // ==========
+            // ========== PHASE 2: If no preferred slot with 3hr, find next slot after preferred time with 3hr ==========
             if (!slotFound) {
-                logger.info("PHASE 2: No 2:30 with 3hr. Looking for next available after 2:30 with 3hr...");
+                logger.info("PHASE 2: No {} with 3hr. Looking for next available after {} with 3hr...", preferredStartTime, preferredStartTime);
 
                 for (String roomName : roomOrder) {
                     if (slotFound)
@@ -113,13 +128,15 @@ public class BookingService {
                     // Get fresh slot list and find slots after 2:30
                     List<WebElement> availableSlots = driver.findElements(By.className("s-lc-eq-avail"));
 
-                    // Build list of slot times after 2:30
+                    // Build list of slot times at or after preferred start time
+                    int preferredStartMins = convertToMinutes(preferredStartTime
+                            + (targetDay == DayOfWeek.TUESDAY ? "am" : "pm"));
                     List<String> slotTimes = new ArrayList<>();
                     for (WebElement slot : availableSlots) {
                         String label = slot.getAttribute("aria-label");
                         if (label != null) {
                             String time = extractTime(label);
-                            if (time != null && convertToMinutes(time) > 870) { // After 2:30
+                            if (time != null && convertToMinutes(time) >= preferredStartMins) {
                                 slotTimes.add(time);
                             }
                         }
