@@ -51,24 +51,25 @@ public class BookingService {
 
             // Determine target start time based on day of week; skip weekends
             DayOfWeek targetDay = targetDate.getDayOfWeek();
+            // preferredStartTime always includes am/pm so matching and minute-conversion are unambiguous
             String preferredStartTime;
             if (targetDay == DayOfWeek.SATURDAY || targetDay == DayOfWeek.SUNDAY) {
                 logger.info("Target date {} is a weekend ({}). Skipping booking.", targetDate, targetDay);
                 return "Skipped: No booking on weekends.";
             } else if (targetDay == DayOfWeek.TUESDAY) {
-                preferredStartTime = "8:30";
+                preferredStartTime = "8:30am";   // 8:30 – 11:30 AM
             } else if (targetDay == DayOfWeek.THURSDAY) {
-                preferredStartTime = "4:00";
+                preferredStartTime = "4:00pm";   // 4:00 – 7:00 PM
             } else {
                 // Monday, Wednesday, Friday
-                preferredStartTime = "2:30";
+                preferredStartTime = "2:30pm";   // 2:30 – 5:30 PM
             }
-            logger.info("Target date {} is a {} — using start time {}pm/am", targetDate, targetDay, preferredStartTime);
+            logger.info("Target date {} is a {} — preferred start: {}", targetDate, targetDay, preferredStartTime);
 
             String bookedSlotInfo = "";
             boolean slotFound = false;
 
-            // Get room order (324A first)
+            // Get room order (324B first)
             List<String> roomOrder = getRoomOrder(driver, wait, js);
 
             // ========== PHASE 1: Search ALL rooms for preferred slot with 3-hour availability ==========
@@ -83,12 +84,13 @@ public class BookingService {
                 navigateToRoom(driver, wait, js, roomName);
                 navigateToDate(driver, wait, today, targetDate);
 
-                // Look for preferred start time slot
+                // Look for preferred start time slot — use extractTime() for exact match,
+                // avoiding substring false-positives (e.g. "2:30pm" inside "12:30pm").
                 List<WebElement> availableSlots = driver.findElements(By.className("s-lc-eq-avail"));
                 for (WebElement slot : availableSlots) {
                     String label = slot.getAttribute("aria-label");
-                    if (label != null && label.contains(preferredStartTime)) {
-                        logger.info("Found {} slot, checking if 3hr available...", preferredStartTime);
+                    if (label != null && preferredStartTime.equals(extractTime(label))) {
+                        logger.info("Found {} slot in {}, checking if 3hr available...", preferredStartTime, roomName);
 
                         js.executeScript(
                                 "arguments[0].scrollIntoView({behavior: 'auto', block: 'center', inline: 'center'});",
@@ -112,72 +114,75 @@ public class BookingService {
                 }
             }
 
-            // ========== PHASE 2: If no preferred slot with 3hr, find next slot after preferred time with 3hr ==========
+            // ========== PHASE 2: TIME-FIRST fallback — collect all (slotTime, room) pairs
+            //            across every room, sort by time proximity, then attempt each in order.
+            //            This prioritises getting the right time window over getting a preferred room.
+            // ==========
             if (!slotFound) {
-                logger.info("PHASE 2: No {} with 3hr. Looking for next available after {} with 3hr...", preferredStartTime, preferredStartTime);
+                logger.info("PHASE 2: No {} with 3hr. Scanning all rooms for earliest available slot at or after {}...",
+                        preferredStartTime, preferredStartTime);
+
+                int preferredStartMins = convertToMinutes(preferredStartTime);
+
+                // Collect candidate (slotTime, roomName) pairs from all rooms in one pass
+                // Each entry: [0] = slotTime string (with am/pm), [1] = roomName
+                List<String[]> candidates = new ArrayList<>();
 
                 for (String roomName : roomOrder) {
-                    if (slotFound)
-                        break;
-
-                    logger.info("Checking room for post-2:30 (3hr): {}", roomName);
-
+                    logger.info("Scanning room for fallback slots: {}", roomName);
                     navigateToRoom(driver, wait, js, roomName);
                     navigateToDate(driver, wait, today, targetDate);
 
-                    // Get fresh slot list and find slots after 2:30
                     List<WebElement> availableSlots = driver.findElements(By.className("s-lc-eq-avail"));
-
-                    // Build list of slot times at or after preferred start time
-                    int preferredStartMins = convertToMinutes(preferredStartTime
-                            + (targetDay == DayOfWeek.TUESDAY ? "am" : "pm"));
-                    List<String> slotTimes = new ArrayList<>();
                     for (WebElement slot : availableSlots) {
                         String label = slot.getAttribute("aria-label");
                         if (label != null) {
                             String time = extractTime(label);
                             if (time != null && convertToMinutes(time) >= preferredStartMins) {
-                                slotTimes.add(time);
+                                candidates.add(new String[]{time, roomName});
+                                logger.info("Candidate: {} in {}", time, roomName);
                             }
                         }
                     }
+                }
 
-                    // Sort by time
-                    slotTimes.sort((a, b) -> convertToMinutes(a) - convertToMinutes(b));
+                // Sort candidates by time ascending (closest to preferred time first)
+                candidates.sort((a, b) -> convertToMinutes(a[0]) - convertToMinutes(b[0]));
 
-                    // Try each slot time
-                    for (String slotTime : slotTimes) {
-                        if (slotFound)
-                            break;
+                // Try each candidate time+room until a 3-hour slot is found
+                for (String[] candidate : candidates) {
+                    if (slotFound)
+                        break;
 
-                        // Re-find the slot element (fresh reference)
-                        navigateToRoom(driver, wait, js, roomName);
-                        navigateToDate(driver, wait, today, targetDate);
+                    String slotTime = candidate[0];
+                    String roomName = candidate[1];
+                    logger.info("Trying fallback slot {} in room {}", slotTime, roomName);
 
-                        List<WebElement> freshSlots = driver.findElements(By.className("s-lc-eq-avail"));
-                        for (WebElement slot : freshSlots) {
-                            String label = slot.getAttribute("aria-label");
-                            if (label != null
-                                    && label.toLowerCase().contains(slotTime.replace("am", "").replace("pm", ""))) {
-                                logger.info("Trying slot: {}", label);
+                    navigateToRoom(driver, wait, js, roomName);
+                    navigateToDate(driver, wait, today, targetDate);
 
-                                js.executeScript(
-                                        "arguments[0].scrollIntoView({behavior: 'auto', block: 'center', inline: 'center'});",
-                                        slot);
-                                wait.until(ExpectedConditions.elementToBeClickable(slot));
-                                slot.click();
-                                Thread.sleep(1000);
+                    List<WebElement> freshSlots = driver.findElements(By.className("s-lc-eq-avail"));
+                    for (WebElement slot : freshSlots) {
+                        String label = slot.getAttribute("aria-label");
+                        if (label != null && slotTime.equals(extractTime(label))) {
+                            logger.info("Clicking slot: {}", label);
 
-                                if (has3HourDuration(driver, wait, slotTime)) {
-                                    bookedSlotInfo = label;
-                                    logger.info("3-hour option available! Booking: {}", bookedSlotInfo);
-                                    select3HourDuration(driver, wait, slotTime);
-                                    slotFound = true;
-                                } else {
-                                    logger.info("3-hour not available for {}. Trying next slot...", slotTime);
-                                }
-                                break; // Found the slot element, move on
+                            js.executeScript(
+                                    "arguments[0].scrollIntoView({behavior: 'auto', block: 'center', inline: 'center'});",
+                                    slot);
+                            wait.until(ExpectedConditions.elementToBeClickable(slot));
+                            slot.click();
+                            Thread.sleep(1000);
+
+                            if (has3HourDuration(driver, wait, slotTime)) {
+                                bookedSlotInfo = label;
+                                logger.info("3-hour option available! Booking: {}", bookedSlotInfo);
+                                select3HourDuration(driver, wait, slotTime);
+                                slotFound = true;
+                            } else {
+                                logger.info("3-hour not available for {} in {}. Moving to next candidate...", slotTime, roomName);
                             }
+                            break; // Move to next candidate regardless
                         }
                     }
                 }
@@ -328,24 +333,24 @@ public class BookingService {
                 By.xpath("//a[contains(@href, '/space/')]")));
 
         List<String> roomNames = new ArrayList<>();
-        String room324A = null;
+        String room324B = null;
 
         for (WebElement room : roomLinks) {
             String name = room.getText();
-            if (name.contains("324A")) {
-                room324A = name;
+            if (name.contains("324B")) {
+                room324B = name; // Prioritise 324B
             } else {
                 roomNames.add(name);
             }
         }
 
         List<String> orderedRooms = new ArrayList<>();
-        if (room324A != null) {
-            orderedRooms.add(room324A);
+        if (room324B != null) {
+            orderedRooms.add(room324B);
         }
         orderedRooms.addAll(roomNames);
 
-        logger.info("Room order: {}", orderedRooms);
+        logger.info("Room order (324B first): {}", orderedRooms);
         return orderedRooms;
     }
 

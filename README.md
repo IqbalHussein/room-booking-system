@@ -47,8 +47,4 @@ this method requires no local java or chrome setup
 this repo has a `.github/workflows/nightly_booking.yml` file.
 1.  go to **settings > secrets and variables > actions**.
 2.  add `BOOKING_USERNAME` and `BOOKING_PASSWORD`.
-3.  the workflow runs automatically on a per-day schedule (all times UTC / EDT−4):
-    *   **mon/wed/fri** — `30 17 * * 1,3,5` (1:30 PM EDT), to cover the 2:30 PM slot
-    *   **tuesday** — `30 11 * * 2` (7:30 AM EDT), to cover the 8:30 AM slot
-    *   **thursday** — `00 19 * * 4` (3:00 PM EDT), to cover the 4:00 PM slot
-    *   **weekends** — no schedule; booking is skipped
+3.  the workflow runs every weekday at **midnight EDT** (`0 4 * * 1-5` UTC). the booking logic in `BookingService.java` selects the correct time slot based on the day of the week, and skips weekends automatically.
