@@ -1,6 +1,13 @@
 # carleton library room booking system
 
-carleton university's library rooms are booked pretty regularly by students and get filled up super fast, which i didn't like. so i made an automated room booker using **java** and **selenium webdriver**, and made it into a **spring boot** microservice which runs every night on **docker** containers. prioritizes bookings at 11:30 AM.
+carleton university's library rooms are booked pretty regularly by students and get filled up super fast, which i didn't like. so i made an automated room booker using **java** and **selenium webdriver**, and made it into a **spring boot** microservice which runs on **docker** containers via github actions. books a 3-hour slot on each weekday at a day-specific time:
+
+| day | time slot |
+|-----|-----------|
+| monday, wednesday, friday | 2:30 – 5:30 PM |
+| tuesday | 8:30 – 11:30 AM |
+| thursday | 4:00 – 7:00 PM |
+| saturday / sunday | no booking |
 
 ## 🚀 key features
 
@@ -40,4 +47,8 @@ this method requires no local java or chrome setup
 this repo has a `.github/workflows/nightly_booking.yml` file.
 1.  go to **settings > secrets and variables > actions**.
 2.  add `BOOKING_USERNAME` and `BOOKING_PASSWORD`.
-3.  the workflow will automatically run every night at **12:01 AM UTC** to secure a room.
+3.  the workflow runs automatically on a per-day schedule (all times UTC / EDT−4):
+    *   **mon/wed/fri** — `30 17 * * 1,3,5` (1:30 PM EDT), to cover the 2:30 PM slot
+    *   **tuesday** — `30 11 * * 2` (7:30 AM EDT), to cover the 8:30 AM slot
+    *   **thursday** — `00 19 * * 4` (3:00 PM EDT), to cover the 4:00 PM slot
+    *   **weekends** — no schedule; booking is skipped
