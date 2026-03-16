@@ -1,4 +1,4 @@
-# carleton library room booking system
+# Carleton Library Room Booking System
 
 carleton university's library rooms are booked pretty regularly by students and get filled up super fast, which i didn't like. so i made an automated room booker using **java** and **selenium webdriver**, and made it into a **spring boot** microservice which runs on **docker** containers via github actions. books a 3-hour slot on each weekday at a day-specific time:
 
