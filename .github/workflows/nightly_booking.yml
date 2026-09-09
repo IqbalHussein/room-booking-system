@@ -2,8 +2,9 @@ name: Nightly Room Booking
 
 on:
   schedule:
-    # Runs at 05:01 UTC (approx 12:01 AM EST) every day
-    - cron: '01 05 * * *'
+    # Runs at 05:01 UTC (approx 12:01 AM EST) on Mon, Wed, Thu, Fri.
+    # Bookings are made 7 days out, so the run day matches the booked day.
+    - cron: '01 05 * * 1,3,4,5'
   workflow_dispatch:
     # Allows manual trigger from GitHub UI
 
@@ -50,6 +51,8 @@ jobs:
           # Check for success
           if [[ "$RESPONSE" == *"Success"* ]]; then
             echo "Booking completed successfully."
+          elif [[ "$RESPONSE" == *"Skipped"* ]]; then
+            echo "Nothing scheduled for the target date."
           else
             echo "Booking failed or returned unexpected response."
             docker logs booking-service
