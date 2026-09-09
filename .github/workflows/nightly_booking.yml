@@ -14,7 +14,18 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      # Catches slot-matching regressions before a browser is ever launched.
+      - name: Run unit tests
+        run: mvn -B test
 
       - name: Build Docker Image
         run: docker build -t roombooking .
@@ -24,37 +35,53 @@ jobs:
           BOOKING_USERNAME: ${{ secrets.BOOKING_USERNAME }}
           BOOKING_PASSWORD: ${{ secrets.BOOKING_PASSWORD }}
         run: |
-          # Start container in background
+          if [ -z "$BOOKING_USERNAME" ] || [ -z "$BOOKING_PASSWORD" ]; then
+            echo "::error::BOOKING_USERNAME / BOOKING_PASSWORD secrets are not set on this repository."
+            exit 1
+          fi
+
           docker run -d --name booking-service \
             -p 8080:8080 \
             -e BOOKING_USERNAME="$BOOKING_USERNAME" \
             -e BOOKING_PASSWORD="$BOOKING_PASSWORD" \
             roombooking
 
-          # Wait for Spring Boot to start (health check loop)
           echo "Waiting for service to start..."
-          for i in {1..30}; do
-            if curl -s http://localhost:8080/api/v1/book > /dev/null; then
-              echo "Service is up!"
+          for i in $(seq 1 40); do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/v1/book || echo 000)
+            if [ "$CODE" != "000" ]; then
+              echo "Service is up (HTTP $CODE to probe)."
               break
             fi
-            echo "Waiting..."
             sleep 2
           done
 
-          # Trigger the booking
           echo "Triggering booking process..."
-          RESPONSE=$(curl -X POST http://localhost:8080/api/v1/book)
-          
+          RESPONSE=$(curl -sS -X POST http://localhost:8080/api/v1/book)
           echo "Booking Response: $RESPONSE"
-          
-          # Check for success
-          if [[ "$RESPONSE" == *"Success"* ]]; then
-            echo "Booking completed successfully."
-          elif [[ "$RESPONSE" == *"Skipped"* ]]; then
-            echo "Nothing scheduled for the target date."
-          else
-            echo "Booking failed or returned unexpected response."
-            docker logs booking-service
-            exit 1
-          fi
+
+          # The service prefixes its reply with a status token. Only FAILED means
+          # something is broken; a room that is simply taken is a normal outcome.
+          case "$RESPONSE" in
+            SUCCESS:*)
+              echo "Booked successfully."
+              ;;
+            SKIPPED:*)
+              echo "Nothing scheduled for the target date."
+              ;;
+            UNAVAILABLE:*)
+              echo "::notice::Scheduled window already taken - no booking made."
+              ;;
+            FAILED:*)
+              echo "::error::$RESPONSE"
+              echo "----- container logs -----"
+              docker logs booking-service
+              exit 1
+              ;;
+            *)
+              echo "::error::Unrecognised response from booking service."
+              echo "----- container logs -----"
+              docker logs booking-service
+              exit 1
+              ;;
+          esac

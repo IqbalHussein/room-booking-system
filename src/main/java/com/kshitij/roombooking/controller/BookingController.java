@@ -1,5 +1,6 @@
 package com.kshitij.roombooking.controller;
 
+import com.kshitij.roombooking.model.BookingResult;
 import com.kshitij.roombooking.service.BookingService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -18,13 +19,16 @@ public class BookingController {
         this.bookingService = bookingService;
     }
 
+    /**
+     * Returns 200 for outcomes that are expected (booked, nothing scheduled,
+     * room already taken) and 500 only when something actually broke, so CI can
+     * tell a busy room apart from a broken scraper.
+     */
     @PostMapping("/book")
     public ResponseEntity<String> triggerBooking() {
-        try {
-            String result = bookingService.bookRoom();
-            return ResponseEntity.ok(result);
-        } catch (Exception e) {
-            return ResponseEntity.internalServerError().body("Booking failed: " + e.getMessage());
-        }
+        BookingResult result = bookingService.bookRoom();
+        return result.isBenign()
+                ? ResponseEntity.ok(result.render())
+                : ResponseEntity.internalServerError().body(result.render());
     }
 }

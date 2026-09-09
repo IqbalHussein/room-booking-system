@@ -15,11 +15,22 @@ all bookings are made in **room 507**, 7 days ahead:
 
 runs on other days are skipped (nothing is scheduled for them).
 
+## 🧪 tests
+
+```bash
+mvn test
+```
+
+slot matching, schedule lookup and grid parsing are unit-tested against fixed libcal payloads, so they run without a browser or network.
+
 ## 🚀 key features
 
 *   **containerized execution**: the environment is fully dockerized with chrome and chromedriver.
-*   **covers edge cases**: has algorithms to handle dynamic DOM changes and auto-retries across a 5-day lookahead window.
-*   **CI/CD pipeline**: github actions for automated nightly execution (cron) and build verification
+*   **reads real slot times**: libcal renders its grid with fullcalendar, where cells carry no readable time at all. the booker reads the same `/spaces/availability/grid` json the page itself fetches, so slot times are exact rather than scraped.
+*   **honest failure reporting**: every outcome is tagged `SUCCESS` / `SKIPPED` / `UNAVAILABLE` / `FAILED`. a room that is simply already booked is *not* reported as a failure, so a red build always means something genuinely broke.
+*   **staged errors**: failures name the step that broke (`ROOM_LOOKUP`, `GRID_FETCH`, `GRID_MISMATCH`, `END_TIME`, `LOGIN`, ...) and include what was actually seen.
+*   **markup-change tripwire**: if the json and the rendered grid disagree on how many slots are free, the booker refuses to click rather than risk booking the wrong slot.
+*   **CI/CD pipeline**: github actions for automated nightly execution (cron), unit tests, and build verification
 
 ## 🏃‍♂️ how to run
 
