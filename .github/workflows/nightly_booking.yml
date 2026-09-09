@@ -46,18 +46,30 @@ jobs:
             -e BOOKING_PASSWORD="$BOOKING_PASSWORD" \
             roombooking
 
+          # curl prints 000 itself when it cannot connect, so `|| true` (not
+          # `|| echo 000`, which would concatenate into 000000) keeps the value
+          # readable while stopping `set -e` from aborting the step.
           echo "Waiting for service to start..."
+          READY=""
           for i in $(seq 1 40); do
-            CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/v1/book || echo 000)
-            if [ "$CODE" != "000" ]; then
-              echo "Service is up (HTTP $CODE to probe)."
-              break
-            fi
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/v1/book || true)
+            case "$CODE" in
+              ""|000) ;;
+              *) READY="$CODE"; break ;;
+            esac
             sleep 2
           done
 
+          if [ -z "$READY" ]; then
+            echo "::error::Service never became reachable on port 8080."
+            echo "----- container logs -----"
+            docker logs booking-service
+            exit 1
+          fi
+          echo "Service is up (probe returned HTTP $READY)."
+
           echo "Triggering booking process..."
-          RESPONSE=$(curl -sS -X POST http://localhost:8080/api/v1/book)
+          RESPONSE=$(curl -sS --max-time 900 -X POST http://localhost:8080/api/v1/book || true)
           echo "Booking Response: $RESPONSE"
 
           # The service prefixes its reply with a status token. Only FAILED means
