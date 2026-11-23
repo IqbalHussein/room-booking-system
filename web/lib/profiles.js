@@ -1,4 +1,4 @@
-import { DAYS } from './schedule.js';
+import { DAYS, blocksOf, upgradeSchedule } from './schedule.js';
 
 /** What a signed-in person sees of their own profile. The password never leaves the server. */
 export function toClient(p) {
@@ -8,7 +8,7 @@ export function toClient(p) {
     username: p.credentials?.username || '',
     hasPassword: Boolean(p.credentials?.password),
     paused: Boolean(p.paused),
-    schedule: p.schedule,
+    schedule: upgradeSchedule(p.schedule),
     lastResults: p.lastResults || [],
   };
 }
@@ -18,7 +18,8 @@ export function toExport(p) {
   const schedule = {};
   for (const day of DAYS) {
     const d = p.schedule?.[day];
-    if (d?.enabled && d.rooms?.length) schedule[day] = d;
+    const blocks = d?.enabled ? blocksOf(d).filter((b) => b.rooms?.length) : [];
+    if (blocks.length) schedule[day] = { blocks };
   }
   return {
     id: p.id,

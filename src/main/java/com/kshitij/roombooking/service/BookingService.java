@@ -8,6 +8,7 @@ import com.kshitij.roombooking.model.Profile;
 import com.kshitij.roombooking.model.ProfileResult;
 import com.kshitij.roombooking.model.Slot;
 import com.kshitij.roombooking.model.SlotPlan;
+import com.kshitij.roombooking.model.TimeBlock;
 import io.github.bonigarcia.wdm.WebDriverManager;
 import org.openqa.selenium.By;
 import org.openqa.selenium.JavascriptExecutor;
@@ -111,22 +112,64 @@ public class BookingService {
     }
 
     BookingResult bookFor(Profile profile, LocalDate targetDate, Map<String, List<Claim>> claimed) {
+        if (profile.problem() != null) {
+            return BookingResult.failed(BookingStage.CONFIG, "This profile's schedule couldn't be read.", profile.problem());
+        }
         Optional<DayPlan> scheduled = profile.planFor(targetDate.getDayOfWeek());
         if (scheduled.isEmpty()) {
             return BookingResult.skipped("Nothing scheduled for " + targetDate.getDayOfWeek() + " (" + targetDate + ").");
         }
-        DayPlan plan = scheduled.get();
-        BookingWindow window = plan.window();
-
         if (!profile.hasCredentials()) {
             return BookingResult.failed(BookingStage.CONFIG,
                     "No Carleton login is saved for this profile.",
                     "Add it under Settings in the scheduler (or set BOOKING_USERNAME / BOOKING_PASSWORD).");
         }
 
+        // Each block is its own LibCal booking. A failure (as opposed to a taken
+        // room) usually repeats -- bad login, changed markup -- so stop there.
+        List<BookingResult> results = new ArrayList<>();
+        for (TimeBlock block : scheduled.get().blocks()) {
+            BookingResult result = bookBlock(profile, block, targetDate, claimed);
+            results.add(result);
+            if (result.status() == BookingResult.Status.FAILED) {
+                break;
+            }
+        }
+        return combine(results, scheduled.get().blocks().size());
+    }
+
+    /**
+     * Folds per-block outcomes into one result for the profile: FAILED if any
+     * block failed, SUCCESS if at least one block was booked (the summary says
+     * how many), otherwise UNAVAILABLE.
+     */
+    static BookingResult combine(List<BookingResult> results, int blockCount) {
+        if (results.size() == 1 && blockCount == 1) {
+            return results.get(0);
+        }
+        List<String> lines = results.stream().map(BookingResult::render).toList();
+        String detail = String.join(" || ", lines);
+        long booked = results.stream().filter(r -> r.status() == BookingResult.Status.SUCCESS).count();
+        Optional<BookingResult> failed = results.stream()
+                .filter(r -> r.status() == BookingResult.Status.FAILED).findFirst();
+        if (failed.isPresent()) {
+            String prefix = booked > 0 ? "Booked " + booked + " of " + blockCount + " blocks, then: " : "";
+            return new BookingResult(BookingResult.Status.FAILED, prefix + failed.get().summary(), detail);
+        }
+        if (booked > 0) {
+            return new BookingResult(BookingResult.Status.SUCCESS,
+                    "Booked " + booked + " of " + blockCount + " blocks.", detail);
+        }
+        return new BookingResult(BookingResult.Status.UNAVAILABLE,
+                "None of the " + blockCount + " blocks could be booked.", detail);
+    }
+
+    private BookingResult bookBlock(Profile profile, TimeBlock block, LocalDate targetDate,
+                                    Map<String, List<Claim>> claimed) {
+        BookingWindow window = block.window();
         List<String> rooms = new ArrayList<>();
         List<String> notes = new ArrayList<>();
-        for (String room : plan.rooms()) {
+        for (String room : block.rooms()) {
             Optional<Claim> clash = claimed.getOrDefault(RoomNames.key(room), List.of()).stream()
                     .filter(c -> overlaps(c.window(), window))
                     .findFirst();

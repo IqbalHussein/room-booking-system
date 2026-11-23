@@ -7,12 +7,14 @@ carleton university's library rooms are booked pretty regularly by students and 
 rooms and times are set in the **scheduler web app**: https://room-booking-scheduler.vercel.app
 
 *   **profiles**: each person gets their own profile, opened with a 4-digit passcode. a profile holds that person's carleton login, so every booking is made under their own account.
-*   **weekly editor**: turn days on and off, pick start/end times in 30-minute steps, and list up to 5 rooms per day **in priority order**. if the first room is taken, the booker tries the next one.
+*   **weekly editor**: a week-at-a-glance timeline; tap a day to switch it on, then set one or more **time blocks** (e.g. two 90-minute sessions) in 30-minute steps. each block has up to 5 rooms **in priority order**: if the first is taken, the booker tries the next.
+*   **3-hour daily limit**: libcal allows one account 3h per day, so blocks are capped at 3h combined (enforced in the editor, the api and the booker).
+*   **coming up**: shows what has been booked for the next week and what tonight's run will try.
 *   **conflict warnings**: once a room is booked, no one else can book it. if another profile wants the same room at an overlapping time, the editor flags it (and says whose booking runs first).
 *   **results**: each night's outcome (booked / taken / failed) shows up on the profile.
 *   **security**: profile records are AES-256-GCM encrypted in a private vercel blob store. 5 wrong passcodes lock the profile for 15 minutes (doubling each time). new profiles need an invite code.
 
-the nightly job books 7 days ahead for every profile, one after another in the order the profiles were created. a room booked by an earlier profile in the same run is skipped for later ones, which go straight to their backup rooms.
+the nightly job books 7 days ahead for every profile, one after another in the order the profiles were created; each block is a separate libcal booking. a room booked by an earlier profile in the same run is skipped for later ones, which go straight to their backup rooms.
 
 if no scheduler is configured, the service falls back to `src/main/resources/default-schedule.json` (room 507, mon/wed 8:30-10:30am, thu/fri 2:30-5:30pm) with `BOOKING_USERNAME` / `BOOKING_PASSWORD`.
 
