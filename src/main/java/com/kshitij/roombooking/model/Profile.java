@@ -8,14 +8,22 @@ import java.util.Optional;
  * One person's booking setup: their Carleton login and their weekly plan.
  *
  * <p>
+ * {@link #problem()} is set when this profile's schedule couldn't be read; it
+ * then fails on its own without affecting anyone else's bookings.
+ *
+ * <p>
  * {@link #toString()} is overridden so the password can never leak into a log
  * line by accident.
  */
 public record Profile(String id, String name, String username, String password,
-                      Map<DayOfWeek, DayPlan> schedule) {
+                      Map<DayOfWeek, DayPlan> schedule, String problem) {
 
     public Profile {
         schedule = Map.copyOf(schedule);
+    }
+
+    public Profile(String id, String name, String username, String password, Map<DayOfWeek, DayPlan> schedule) {
+        this(id, name, username, password, schedule, null);
     }
 
     public Optional<DayPlan> planFor(DayOfWeek day) {

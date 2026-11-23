@@ -2,14 +2,19 @@
 
 const DAYS = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
 const DAY_LABEL = Object.fromEntries(DAYS.map((d) => [d, d[0] + d.slice(1).toLowerCase()]));
+const DAY_START = 7 * 60; // grid and dropdowns run 7:00am–11:00pm
+const DAY_END = 23 * 60;
 const TIMES = [];
-for (let m = 7 * 60; m <= 23 * 60; m += 30) {
+for (let m = DAY_START; m <= DAY_END; m += 30) {
   TIMES.push(`${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`);
 }
 const RUN_UTC_HOUR = 5;
 const RUN_UTC_MINUTE = 1;
 const LOOKAHEAD_DAYS = 7;
 const MAX_ROOMS = 5;
+const MAX_BLOCKS = 4;
+const DAILY_MAX = 180; // LibCal: 3 hours per account per day
+const TZ = 'America/Toronto';
 
 const app = document.getElementById('app');
 const topbarRight = document.getElementById('topbarRight');
@@ -24,6 +29,7 @@ const state = {
   profile: null, // server copy
   draft: null, // schedule being edited
   claims: [],
+  open: null, // expanded day
   copyFor: null,
   saving: false,
 };
@@ -33,18 +39,21 @@ const state = {
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const clone = (o) => JSON.parse(JSON.stringify(o));
 const toMin = (t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3));
-const ordinal = (n) => n + (['th', 'st', 'nd', 'rd'][(n % 100 - 20) % 10] || ['th', 'st', 'nd', 'rd'][n % 100] || 'th');
+const toTime = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+const blockMins = (b) => toMin(b.end) - toMin(b.start);
+const dayMins = (d) => (d?.blocks || []).reduce((s, b) => s + blockMins(b), 0);
 
 function fmtTime(t) {
   let h = Number(t.slice(0, 2));
   const m = t.slice(3);
   const ap = h >= 12 ? 'pm' : 'am';
   h = h % 12 || 12;
-  return `${h}:${m}${ap}`;
+  return m === '00' ? `${h}${ap}` : `${h}:${m}${ap}`;
 }
 
-function fmtDuration(start, end) {
-  const mins = toMin(end) - toMin(start);
+const fmtRange = (b) => `${fmtTime(b.start)}–${fmtTime(b.end)}`;
+
+function fmtHM(mins) {
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   return h && m ? `${h}h ${m}m` : h ? `${h}h` : `${m}m`;
@@ -67,27 +76,31 @@ function storage(fn) {
   }
 }
 
-/** Next nightly run and the date it books (the booker books 7 days ahead). */
+/* Dates are handled as YYYY-MM-DD strings, in library (Toronto) time. */
+const isoIn = (date, timeZone) => new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+const todayISO = () => isoIn(new Date(), TZ);
+function addDays(iso, n) {
+  const d = new Date(`${iso}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+const dayKeyOf = (iso) => DAYS[(new Date(`${iso}T12:00:00Z`).getUTCDay() + 6) % 7];
+const fmtISO = (iso, opts = { weekday: 'short', month: 'short', day: 'numeric' }) =>
+  new Date(`${iso}T12:00:00Z`).toLocaleDateString(undefined, { ...opts, timeZone: 'UTC' });
+
+/** The next nightly run and the date it books (7 days ahead). */
 function nextRun(now = new Date()) {
   const run = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), RUN_UTC_HOUR, RUN_UTC_MINUTE));
   if (run <= now) run.setUTCDate(run.getUTCDate() + 1);
-  const target = new Date(run);
-  target.setUTCDate(target.getUTCDate() + LOOKAHEAD_DAYS);
-  const dayKey = DAYS[(target.getUTCDay() + 6) % 7];
-  return { run, target, dayKey };
-}
-
-const fmtDate = (d) => d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
-
-function relRun(run) {
-  const time = run.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-  const today = new Date();
-  const sameDay = run.toDateString() === today.toDateString();
-  const tomorrow = new Date(today);
-  tomorrow.setDate(today.getDate() + 1);
-  if (sameDay) return `today at ${time}`;
-  if (run.toDateString() === tomorrow.toDateString()) return `${run.getHours() < 4 ? 'tonight' : 'tomorrow'} at ${time}`;
-  return `${run.toLocaleDateString(undefined, { weekday: 'long' })} at ${time}`;
+  const targetISO = addDays(isoIn(run, 'UTC'), LOOKAHEAD_DAYS);
+  const time = run.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: TZ });
+  const hour = Number(new Intl.DateTimeFormat('en-US', { hour: 'numeric', hourCycle: 'h23', timeZone: TZ }).format(run));
+  const runDay = isoIn(run, TZ);
+  const today = todayISO();
+  const when = runDay === today ? 'today'
+    : runDay === addDays(today, 1) ? (hour < 6 ? 'tonight' : 'tomorrow')
+      : fmtISO(runDay, { weekday: 'long' });
+  return { run, targetISO, dayKey: dayKeyOf(targetISO), label: `${when} at ${time} ET` };
 }
 
 let toastTimer;
@@ -142,30 +155,46 @@ function modal({ title, html, confirm = 'OK', cancel = 'Cancel', danger = false 
   });
 }
 
-/* ---------------- conflicts (mirrors lib/schedule.js) ---------------- */
+/* ---------------- rules (mirror lib/schedule.js) ---------------- */
 
+/** Same-room, overlapping-time clashes with other profiles. */
 function conflictsFor(schedule, claims) {
   const out = [];
   for (const day of DAYS) {
     const mine = schedule[day];
     if (!mine?.enabled) continue;
-    for (const c of claims) {
-      if (c.day !== day || !(toMin(mine.start) < toMin(c.end) && toMin(c.start) < toMin(mine.end))) continue;
-      mine.rooms.forEach((room, myRank) => {
-        const theirRank = c.rooms.findIndex((r) => r.toUpperCase() === room.toUpperCase());
-        if (theirRank >= 0) out.push({ day, room, myRank, theirRank, ...c });
-      });
-    }
+    mine.blocks.forEach((b, block) => {
+      for (const c of claims) {
+        if (c.day !== day || !(toMin(b.start) < toMin(c.end) && toMin(c.start) < toMin(b.end))) continue;
+        b.rooms.forEach((room, myRank) => {
+          const theirRank = c.rooms.findIndex((r) => r.toUpperCase() === room.toUpperCase());
+          if (theirRank >= 0) out.push({ day, block, room, myRank, theirRank, ...c });
+        });
+      }
+    });
   }
   return out;
 }
 
-function conflictText(c) {
-  const who = `<strong>${esc(c.profileName)}</strong>`;
-  const order = c.runsFirst
-    ? `${who}'s booking runs before yours, so if they get it you'll fall back to your next room.`
-    : `Your booking runs first, so ${esc(c.profileName)} would fall back to their next room.`;
-  return `⚠ ${who} also wants <strong>${esc(c.room)}</strong> ${fmtTime(c.start)}–${fmtTime(c.end)} (their ${ordinal(c.theirRank + 1)} choice, your ${ordinal(c.myRank + 1)}). ${order}`;
+/** Things that would make the server reject a save, per day. */
+function problemsFor(schedule) {
+  const out = {};
+  for (const day of DAYS) {
+    const d = schedule[day];
+    if (!d.enabled) continue;
+    const list = [];
+    const multi = d.blocks.length > 1;
+    d.blocks.forEach((b, i) => {
+      if (!b.rooms.length) list.push(multi ? `Block ${i + 1} needs a room.` : 'Add a room.');
+    });
+    const sorted = [...d.blocks].sort((a, b) => toMin(a.start) - toMin(b.start));
+    for (let i = 1; i < sorted.length; i++) {
+      if (toMin(sorted[i].start) < toMin(sorted[i - 1].end)) list.push('Two blocks overlap. Move one of them.');
+    }
+    if (dayMins(d) > DAILY_MAX) list.push(`That's ${fmtHM(dayMins(d))}. The library allows 3h per day in total.`);
+    if (list.length) out[day] = list;
+  }
+  return out;
 }
 
 /* ---------------- navigation ---------------- */
@@ -385,61 +414,167 @@ async function submitCreate(form) {
 
 /* ---------------- editor ---------------- */
 
-function timeOptions(selected, { after } = {}) {
-  return TIMES.filter((t) => (after ? toMin(t) > toMin(after) : toMin(t) < 23 * 60))
+const STATUS_LABEL = { SUCCESS: 'Booked', UNAVAILABLE: 'Room taken', FAILED: 'Failed', SKIPPED: 'Nothing scheduled' };
+
+/** "Coming up": what is booked (from nightly results) and what tonight's run will try. */
+function agendaHtml(p, next) {
+  const today = todayISO();
+  const rows = [];
+  // Tonight's run can target today+8 in Toronto time (it books 7 days after the run's date).
+  for (let k = 0; k <= LOOKAHEAD_DAYS + 1; k++) {
+    const iso = addDays(today, k);
+    if (iso > next.targetISO) break;
+    const result = (p.lastResults || []).find((r) => r.targetDate === iso);
+    const when = k === 0 ? 'Today' : k === 1 ? 'Tomorrow' : fmtISO(iso, { weekday: 'short' });
+    const date = fmtISO(iso, { month: 'short', day: 'numeric' });
+    if (result) {
+      rows.push(`<li class="ag-row"><div class="ag-date"><strong>${when}</strong><span>${date}</span></div>
+        <div class="ag-body"><span class="pill ${esc(result.status)}">${STATUS_LABEL[result.status] || esc(result.status)}</span>
+        <span class="small">${esc(result.summary || '')}</span></div></li>`);
+    } else if (iso === next.targetISO) {
+      const d = p.schedule[next.dayKey];
+      const body = p.paused
+        ? '<span class="pill paused">Paused</span><span class="small muted">Nothing will be booked while paused.</span>'
+        : d.enabled
+          ? `<span class="pill pending">Books ${esc(next.label)}</span>
+             <span class="small">${d.blocks.map((b) => `${fmtRange(b)} · ${esc(b.rooms.join(' → '))}`).join('<br>')}</span>`
+          : `<span class="pill none">Nothing to book</span><span class="small muted">${DAY_LABEL[next.dayKey]} is off in your schedule.</span>`;
+      rows.push(`<li class="ag-row next"><div class="ag-date"><strong>${when}</strong><span>${date}</span></div><div class="ag-body">${body}</div></li>`);
+    }
+  }
+  return `<section class="agenda" aria-labelledby="agTitle">
+    <div class="section-title"><h2 id="agTitle">Coming up</h2>
+      <span class="small muted">Each night at 12:01 AM ET, the booker books 7 days ahead</span></div>
+    <ul class="ag-list">${rows.join('')}</ul>
+    ${rows.length === 1 && !(p.lastResults || []).length ? '<p class="small muted ag-foot">Bookings show up here as they’re made.</p>' : ''}
+  </section>`;
+}
+
+/** Tiny 7am–11pm timeline for a day row: your blocks, plus amber ticks where a friend wants the same room. */
+function timeline(d, conflicts) {
+  const span = DAY_END - DAY_START;
+  const pos = (t) => ((Math.min(Math.max(toMin(t), DAY_START), DAY_END) - DAY_START) / span) * 100;
+  const bars = d.enabled ? d.blocks.map((b) => {
+    const w = pos(b.end) - pos(b.start);
+    return `<span class="tl-block" style="left:${pos(b.start)}%;width:${w}%">${w >= 15 ? `<span class="tl-label">${esc(b.rooms[0] || '')}</span>` : ''}</span>`;
+  }).join('') : '';
+  const marks = conflicts.map((c) => `<span class="tl-clash" style="left:${pos(c.start)}%;width:${pos(c.end) - pos(c.start)}%"></span>`).join('');
+  return `<span class="tl" aria-hidden="true">${[9, 12, 15, 18, 21].map((h) => `<span class="tl-tick" style="left:${((h * 60 - DAY_START) / span) * 100}%"></span>`).join('')}${bars}${marks}</span>`;
+}
+
+function startOptions(selected) {
+  return TIMES.filter((t) => toMin(t) <= DAY_END - 30)
     .map((t) => `<option value="${t}" ${t === selected ? 'selected' : ''}>${fmtTime(t)}</option>`).join('');
 }
 
-function dayCard(day, next, conflicts) {
-  const d = state.draft[day];
-  const mine = conflicts.filter((c) => c.day === day);
-  const conflictRooms = new Set(mine.map((c) => c.room.toUpperCase()));
-  const chips = d.rooms.map((room, i) => `
-    <span class="chip ${conflictRooms.has(room.toUpperCase()) ? 'conflict' : ''}" title="${conflictRooms.has(room.toUpperCase()) ? 'Someone else wants this room at an overlapping time' : ''}">
+/** End times for a block: after its start, within the day, and within what's left of the 3h budget. */
+function endOptions(d, i) {
+  const b = d.blocks[i];
+  const others = dayMins(d) - blockMins(b);
+  const max = Math.min(DAY_END, toMin(b.start) + Math.max(30, DAILY_MAX - others));
+  const opts = [];
+  for (let m = toMin(b.start) + 30; m <= max; m += 30) opts.push(toTime(m));
+  if (!opts.includes(b.end)) opts.push(b.end); // keep an over-budget value visible so it can be fixed
+  return opts.map((t) => `<option value="${t}" ${t === b.end ? 'selected' : ''}>${fmtTime(t)} · ${fmtHM(toMin(t) - toMin(b.start))}</option>`).join('');
+}
+
+function chipsHtml(day, bi, b, clashRooms) {
+  return b.rooms.map((room, i) => {
+    const clash = clashRooms.has(room.toUpperCase());
+    return `<span class="chip ${clash ? 'conflict' : ''}">
       <span class="rank" aria-label="choice ${i + 1}">${i + 1}</span>
-      <span class="room">${esc(room)}</span>
-      <button class="chip-btn" data-act="up" data-day="${day}" data-i="${i}" ${i === 0 ? 'disabled' : ''} aria-label="Move ${esc(room)} earlier">↑</button>
-      <button class="chip-btn" data-act="down" data-day="${day}" data-i="${i}" ${i === d.rooms.length - 1 ? 'disabled' : ''} aria-label="Move ${esc(room)} later">↓</button>
-      <button class="chip-btn" data-act="rm" data-day="${day}" data-i="${i}" aria-label="Remove ${esc(room)}">✕</button>
-    </span>`).join('');
+      <span class="room">${esc(room)}${clash ? ' <span aria-label="wanted by someone else">⚠</span>' : ''}</span>
+      <button class="chip-btn" data-act="up" data-day="${day}" data-b="${bi}" data-i="${i}" ${i === 0 ? 'disabled' : ''} aria-label="Try ${esc(room)} earlier">↑</button>
+      <button class="chip-btn" data-act="down" data-day="${day}" data-b="${bi}" data-i="${i}" ${i === b.rooms.length - 1 ? 'disabled' : ''} aria-label="Try ${esc(room)} later">↓</button>
+      <button class="chip-btn" data-act="rm" data-day="${day}" data-b="${bi}" data-i="${i}" aria-label="Remove ${esc(room)}">✕</button>
+    </span>`;
+  }).join('');
+}
 
-  const copyPop = state.copyFor === day ? `
-    <div class="copy-pop">
-      <span class="small muted">Copy ${DAY_LABEL[day]}'s times and rooms to:</span>
-      <div class="copy-days">${DAYS.filter((x) => x !== day).map((x) => `
-        <label><input type="checkbox" value="${x}" data-copy-day> ${DAY_LABEL[x].slice(0, 3)}</label>`).join('')}</div>
-      <div class="row"><button class="btn small primary" data-act="copy-apply" data-day="${day}">Apply</button>
-        <button class="btn small ghost" data-act="copy-cancel">Cancel</button></div>
-    </div>` : '';
+/** One line per other person, instead of one paragraph per room. */
+function clashSummary(list) {
+  const byPerson = new Map();
+  for (const c of list) {
+    const key = `${c.profileName}|${c.start}|${c.end}`;
+    if (!byPerson.has(key)) byPerson.set(key, { ...c, rooms: [] });
+    byPerson.get(key).rooms.push(c.room);
+  }
+  return [...byPerson.values()].map((c) => `<li>⚠ <strong>${esc(c.profileName)}</strong> also wants ${c.rooms.map(esc).join(', ')}
+    ${fmtRange(c)}. <span class="muted">${c.runsFirst ? 'Their booking runs first.' : 'Yours runs first.'}</span></li>`).join('');
+}
 
-  return `
-  <article class="day ${d.enabled ? '' : 'off'} ${d.enabled && day === next.dayKey ? 'next' : ''} ${mine.length ? 'has-conflict' : ''}" data-daycard="${day}">
-    <div class="day-top">
-      <label class="switch"><input type="checkbox" data-act="toggle" data-day="${day}" ${d.enabled ? 'checked' : ''} aria-label="Book on ${DAY_LABEL[day]}"><span class="track"></span></label>
-      <div class="day-name">${DAY_LABEL[day]}
-        ${day === next.dayKey ? `<span class="tag">Next run · ${fmtDate(next.target)}</span>` : ''}</div>
-      ${d.enabled ? `<span class="dur">${fmtDuration(d.start, d.end)}</span>` : '<span class="dur">Off</span>'}
-    </div>
-    ${d.enabled ? `
-    <div class="day-body">
-      <div class="times">
-        <select data-act="start" data-day="${day}" aria-label="${DAY_LABEL[day]} start time">${timeOptions(d.start)}</select>
-        <span class="muted">to</span>
-        <select data-act="end" data-day="${day}" aria-label="${DAY_LABEL[day]} end time">${timeOptions(d.end, { after: d.start })}</select>
-      </div>
-      <div>
-        <div class="rooms-label">${d.rooms.length > 1 ? 'Rooms, tried in this order until one is free' : d.rooms.length ? 'Room (add backups in case it’s taken)' : 'Which room?'}</div>
-        <div class="chips" style="margin-top:6px">
-          ${chips}
-          ${d.rooms.length < MAX_ROOMS ? `<form class="add-room" data-add="${day}">
-            <input class="input" name="room" placeholder="${d.rooms.length ? '+ backup room' : '+ add room, e.g. 507'}" maxlength="24" autocomplete="off" aria-label="Add a room for ${DAY_LABEL[day]}" data-focus="add-${day}">
+function dayCard(day, conflicts, problems) {
+  const d = state.draft[day];
+  const open = state.open === day;
+  const mine = conflicts.filter((c) => c.day === day);
+  const issues = problems[day] || [];
+  const used = dayMins(d);
+  const summary = d.enabled ? fmtHM(used) : 'Off';
+
+  let body = '';
+  if (open) {
+    const blocks = d.blocks.map((b, bi) => {
+      const clashes = mine.filter((c) => c.block === bi);
+      const clashRooms = new Set(clashes.map((c) => c.room.toUpperCase()));
+      return `<div class="block">
+        <div class="block-head">
+          <span class="block-title">${d.blocks.length > 1 ? `Block ${bi + 1}` : 'Time'}</span>
+          ${d.blocks.length > 1 ? `<button class="btn ghost small" data-act="rm-block" data-day="${day}" data-b="${bi}">Remove block</button>` : ''}
+        </div>
+        <div class="times">
+          <select data-act="start" data-day="${day}" data-b="${bi}" aria-label="${DAY_LABEL[day]} block ${bi + 1} start">${startOptions(b.start)}</select>
+          <span class="muted">to</span>
+          <select data-act="end" data-day="${day}" data-b="${bi}" aria-label="${DAY_LABEL[day]} block ${bi + 1} end">${endOptions(d, bi)}</select>
+        </div>
+        <div class="rooms-label">${b.rooms.length > 1 ? 'Rooms, tried in this order until one is free' : b.rooms.length ? 'Room. Add a backup in case it’s taken' : 'Which room?'}</div>
+        <div class="chips">
+          ${chipsHtml(day, bi, b, clashRooms)}
+          ${b.rooms.length < MAX_ROOMS ? `<form class="add-room" data-add="${day}" data-b="${bi}">
+            <input class="input" name="room" placeholder="${b.rooms.length ? '+ backup room' : '+ add room, e.g. 507'}" maxlength="24" autocomplete="off"
+              aria-label="Add a room to ${DAY_LABEL[day]} block ${bi + 1}" data-focus="add-${day}-${bi}">
+            <button class="btn small" type="submit">Add</button>
           </form>` : ''}
         </div>
+        ${clashes.length ? `<ul class="warn">${clashSummary(clashes)}</ul>` : ''}
+      </div>`;
+    }).join('');
+
+    const left = DAILY_MAX - used;
+    const canAdd = d.blocks.length < MAX_BLOCKS && left >= 30;
+    body = `<div class="day-body" id="body-${day}">
+      <div class="budget ${used > DAILY_MAX ? 'over' : ''}">
+        <div class="budget-bar"><span style="width:${Math.min(100, (used / DAILY_MAX) * 100)}%"></span></div>
+        <span class="small">${fmtHM(used)} of 3h daily limit${used < DAILY_MAX ? ` · ${fmtHM(left)} left` : ''}</span>
       </div>
-      ${mine.length ? `<div class="warn" role="note">${mine.map((c) => `<span>${conflictText(c)}</span>`).join('')}</div>` : ''}
-      ${copyPop}
-      ${state.copyFor === day ? '' : `<div class="day-foot"><button class="btn small ghost" data-act="copy" data-day="${day}">Copy to other days…</button></div>`}
-    </div>` : ''}
+      ${blocks}
+      ${issues.length ? `<ul class="issues" role="alert">${issues.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+      <div class="day-foot">
+        ${canAdd ? `<button class="btn small" data-act="add-block" data-day="${day}">+ Add another block</button>`
+          : `<span class="small muted">${left < 30 ? 'Daily limit reached' : `Up to ${MAX_BLOCKS} blocks`}</span>`}
+        ${state.copyFor === day ? '' : `<button class="btn small ghost" data-act="copy" data-day="${day}">Copy to other days…</button>`}
+      </div>
+      ${state.copyFor === day ? `<div class="copy-pop">
+        <span class="small muted">Copy ${DAY_LABEL[day]}'s blocks and rooms to:</span>
+        <div class="copy-days">${DAYS.filter((x) => x !== day).map((x) => `
+          <label><input type="checkbox" value="${x}" data-copy-day> ${DAY_LABEL[x].slice(0, 3)}</label>`).join('')}</div>
+        <div class="row"><button class="btn small primary" data-act="copy-apply" data-day="${day}">Apply</button>
+          <button class="btn small ghost" data-act="copy-cancel">Cancel</button></div>
+      </div>` : ''}
+    </div>`;
+  }
+
+  return `
+  <article class="day ${d.enabled ? '' : 'off'} ${open ? 'open' : ''} ${mine.length ? 'has-conflict' : ''} ${issues.length ? 'has-issue' : ''}">
+    <div class="day-row">
+      <label class="switch"><input type="checkbox" data-act="toggle" data-day="${day}" ${d.enabled ? 'checked' : ''} aria-label="Book on ${DAY_LABEL[day]}"><span class="track"></span></label>
+      <button class="day-open" data-act="open" data-day="${day}" aria-expanded="${open}" ${open ? `aria-controls="body-${day}"` : ''}>
+        <span class="day-name"><span class="long">${DAY_LABEL[day]}</span><span class="short">${DAY_LABEL[day].slice(0, 3)}</span></span>
+        ${timeline(d, d.enabled ? mine : [])}
+        <span class="day-sum">${issues.length ? '<span class="dot-issue" aria-label="needs attention"></span>' : mine.length ? '<span aria-label="room overlap">⚠</span> ' : ''}${summary}</span>
+        <span class="chev" aria-hidden="true"></span>
+      </button>
+    </div>
+    ${body}
   </article>`;
 }
 
@@ -448,42 +583,41 @@ function renderEditor() {
   const focusKey = document.activeElement?.dataset?.focus;
   const next = nextRun();
   const conflicts = p.paused ? [] : conflictsFor(state.draft, state.claims);
-  const last = p.lastResults?.[0];
-  const nextPlan = state.draft[next.dayKey];
-  const activeDays = DAYS.filter((d) => state.draft[d].enabled).length;
+  const problems = problemsFor(state.draft);
+  const problemCount = Object.values(problems).flat().length;
+  const active = DAYS.filter((d) => state.draft[d].enabled);
+  const weekly = active.reduce((s, d) => s + dayMins(state.draft[d]), 0);
 
   app.innerHTML = `
     <section class="ed-head">
-      ${avatar(p.name, 'lg')}
-      <div class="grow"><h1>${esc(p.name)}'s week</h1>
-        <p class="muted small">${activeDays ? `Booking ${activeDays} ${activeDays === 1 ? 'day' : 'days'} a week, 7 days ahead.` : 'No days turned on yet. Flip a switch below to start.'}</p></div>
+      ${avatar(p.name)}
+      <div class="grow"><h1>${esc(p.name)}</h1>
+        <p class="muted small">${active.length ? `${fmtHM(weekly)} a week across ${active.length} ${active.length === 1 ? 'day' : 'days'}` : 'No days on yet. Switch one on below to start.'}</p></div>
     </section>
 
     ${p.paused ? `<div class="banner"><span><strong>Bookings are paused.</strong> Nothing will be booked for you until you resume.</span>
-      <button class="btn small primary" data-act="unpause">Resume bookings</button></div>` : ''}
+      <button class="btn small primary" data-act="unpause">Resume</button></div>` : ''}
     ${!p.hasPassword ? `<div class="banner"><span><strong>No Carleton login saved.</strong> Add it under Settings or bookings will fail.</span></div>` : ''}
 
-    <div class="strip">
-      <div class="stat"><span class="label">Next run</span>
-        <span class="value">${relRun(next.run)}</span>
-        <span class="small muted">${p.paused ? 'Paused' : nextPlan.enabled
-          ? `Books ${esc(nextPlan.rooms[0] || '—')}${nextPlan.rooms.length > 1 ? ` (+${nextPlan.rooms.length - 1} backup)` : ''} for ${fmtDate(next.target)}, ${fmtTime(nextPlan.start)}–${fmtTime(nextPlan.end)}`
-          : `Nothing for ${fmtDate(next.target)}. ${DAY_LABEL[next.dayKey]} is off.`}</span></div>
-      <div class="stat"><span class="label">Last result</span>
-        ${last ? `<span class="pill ${esc(last.status)}">${{ SUCCESS: 'Booked', UNAVAILABLE: 'Room taken', FAILED: 'Failed', SKIPPED: 'Nothing scheduled' }[last.status] || esc(last.status)}</span>
-          <span class="small muted">${esc(last.summary || '')}</span>`
-        : `<span class="pill none">No runs yet</span><span class="small muted">Results show up here after the first nightly run.</span>`}</div>
-    </div>
+    ${agendaHtml(p, next)}
 
-    <div class="section-title"><h2>Weekly schedule</h2>
-      <span class="small muted">Rooms are booked in 30-minute steps</span></div>
-    <div class="days">${DAYS.map((d) => dayCard(d, next, conflicts)).join('')}</div>
+    <section aria-labelledby="wkTitle">
+      <div class="section-title"><h2 id="wkTitle">Weekly schedule</h2>
+        <span class="small muted">Up to 3h a day, split however you like</span></div>
+      <div class="days">
+        <div class="axis" aria-hidden="true"><div class="day-row"><span></span><span class="day-open">
+          <span></span><span class="axis-line">${[9, 12, 15, 18, 21].map((h) =>
+            `<span style="left:${((h * 60 - DAY_START) / (DAY_END - DAY_START)) * 100}%">${h > 12 ? h - 12 : h}${h >= 12 ? 'p' : 'a'}</span>`).join('')}</span>
+          <span></span><span></span></span></div></div>
+        ${DAYS.map((d) => dayCard(d, conflicts, problems)).join('')}
+      </div>
+    </section>
 
     <section class="settings">
       <h2>Settings</h2>
       ${p.lastResults?.length ? `<details class="card"><summary>Booking history</summary><div class="inner history">
-        ${p.lastResults.map((r) => `<div class="hist-row"><div class="row"><span class="pill ${esc(r.status)}">${esc(r.status)}</span>
-          <span class="small muted">${new Date(r.ranAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span></div>
+        ${p.lastResults.map((r) => `<div class="hist-row"><div class="row"><span class="pill ${esc(r.status)}">${STATUS_LABEL[r.status] || esc(r.status)}</span>
+          <span class="small muted">for ${r.targetDate ? fmtISO(r.targetDate) : '?'} · ran ${new Date(r.ranAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span></div>
           <span class="small">${esc(r.summary || '')}</span>${r.detail ? `<span class="small muted">${esc(r.detail)}</span>` : ''}</div>`).join('')}
       </div></details>` : ''}
       <details class="card"><summary>Carleton login</summary><form class="inner" id="credForm" autocomplete="off">
@@ -505,15 +639,12 @@ function renderEditor() {
     </section>
 
     <div class="savebar ${dirty() ? 'show' : ''}" role="region" aria-label="Unsaved changes">
-      <span>${conflicts.length ? '⚠ Unsaved, with room overlaps' : 'Unsaved changes'}</span>
+      <span>${problemCount ? `Fix ${problemCount} ${problemCount === 1 ? 'issue' : 'issues'} to save` : conflicts.length ? '⚠ Unsaved, with room overlaps' : 'Unsaved changes'}</span>
       <span class="row" style="gap:4px"><button class="btn ghost small" data-act="discard">Discard</button>
       <button class="btn primary" data-act="save" ${state.saving ? 'disabled' : ''}>${state.saving ? 'Saving…' : 'Save'}</button></span>
     </div>`;
 
-  if (focusKey) {
-    const el = app.querySelector(`[data-focus="${focusKey}"]`);
-    el?.focus();
-  }
+  if (focusKey) app.querySelector(`[data-focus="${focusKey}"]`)?.focus();
 }
 
 function mutate(fn) {
@@ -521,14 +652,35 @@ function mutate(fn) {
   renderEditor();
 }
 
+/** Where a new block goes: an hour after the last one, else an hour before the first. */
+function newBlock(d) {
+  const left = DAILY_MAX - dayMins(d);
+  const len = Math.min(90, left);
+  const sorted = [...d.blocks].sort((a, b) => toMin(a.start) - toMin(b.start));
+  const last = sorted[sorted.length - 1];
+  const rooms = [...last.rooms];
+  let start = toMin(last.end) + 60;
+  if (start + len > DAY_END) start = toMin(sorted[0].start) - 60 - len;
+  if (start < DAY_START) return null;
+  return { start: toTime(start), end: toTime(start + len), rooms };
+}
+
 async function save() {
-  const conflicts = conflictsFor(state.draft, state.claims);
-  if (conflicts.length && !state.profile.paused) {
+  const problems = problemsFor(state.draft);
+  const firstBad = DAYS.find((d) => problems[d]);
+  if (firstBad) {
+    state.open = firstBad;
+    renderEditor();
+    document.getElementById(`body-${firstBad}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    return toast(`${DAY_LABEL[firstBad]}: ${problems[firstBad][0]}`, true);
+  }
+  const conflicts = state.profile.paused ? [] : conflictsFor(state.draft, state.claims);
+  if (conflicts.length) {
     const ok = await modal({
       title: 'Some rooms overlap with friends',
-      html: `<p style="margin-bottom:10px">Once a room is booked, no one else can book it. These overlap:</p>
-        <ul>${conflicts.map((c) => `<li>${DAY_LABEL[c.day]}: <strong>${esc(c.room)}</strong>, also wanted by ${esc(c.profileName)} (${fmtTime(c.start)}–${fmtTime(c.end)})</li>`).join('')}</ul>
-        <p style="margin-top:10px">Saving is fine. Whoever loses that room falls back to their next choice.</p>`,
+      html: `<p style="margin-bottom:10px">Once a room is booked, nobody else can book it. These overlap:</p>
+        <ul>${conflicts.map((c) => `<li>${DAY_LABEL[c.day]} ${fmtRange(state.draft[c.day].blocks[c.block])}: <strong>${esc(c.room)}</strong>, also wanted by ${esc(c.profileName)}</li>`).join('')}</ul>
+        <p style="margin-top:10px">You can still save. Whoever doesn't get the room falls back to their next choice.</p>`,
       confirm: 'Save anyway',
       cancel: 'Keep editing',
     });
@@ -591,11 +743,24 @@ document.addEventListener('click', async (e) => {
   if (t.dataset.key) return pressKey(t.dataset.key);
 
   const { act, day } = t.dataset;
+  const bi = Number(t.dataset.b);
   const i = Number(t.dataset.i);
   if (!act) return;
-  if (act === 'up') mutate((s) => s[day].rooms.splice(i - 1, 0, s[day].rooms.splice(i, 1)[0]));
-  if (act === 'down') mutate((s) => s[day].rooms.splice(i + 1, 0, s[day].rooms.splice(i, 1)[0]));
-  if (act === 'rm') mutate((s) => s[day].rooms.splice(i, 1));
+  const rooms = (s) => s[day].blocks[bi].rooms;
+  if (act === 'open') {
+    state.open = state.open === day ? null : day;
+    state.copyFor = null;
+    renderEditor();
+  }
+  if (act === 'up') mutate((s) => rooms(s).splice(i - 1, 0, rooms(s).splice(i, 1)[0]));
+  if (act === 'down') mutate((s) => rooms(s).splice(i + 1, 0, rooms(s).splice(i, 1)[0]));
+  if (act === 'rm') mutate((s) => rooms(s).splice(i, 1));
+  if (act === 'add-block') {
+    const b = newBlock(state.draft[day]);
+    if (!b) return toast('No space left in the day for another block', true);
+    mutate((s) => s[day].blocks.push(b));
+  }
+  if (act === 'rm-block') mutate((s) => s[day].blocks.splice(bi, 1));
   if (act === 'copy') { state.copyFor = day; renderEditor(); }
   if (act === 'copy-cancel') { state.copyFor = null; renderEditor(); }
   if (act === 'copy-apply') {
@@ -632,28 +797,26 @@ document.addEventListener('click', async (e) => {
 
 document.addEventListener('change', (e) => {
   const { act, day } = e.target.dataset;
+  const bi = Number(e.target.dataset.b);
   if (!act) return;
   if (act === 'toggle') {
-    mutate((s) => {
-      s[day].enabled = e.target.checked;
-    });
-    if (e.target.checked && !state.draft[day].rooms.length) {
-      app.querySelector(`[data-focus="add-${day}"]`)?.focus();
-    }
+    const on = e.target.checked;
+    if (on) state.open = day;
+    mutate((s) => { s[day].enabled = on; });
+    if (on && !state.draft[day].blocks[0].rooms.length) app.querySelector(`[data-focus="add-${day}-0"]`)?.focus();
   }
   if (act === 'start') {
     mutate((s) => {
       const d = s[day];
-      const len = toMin(d.end) - toMin(d.start);
-      d.start = e.target.value;
-      if (toMin(d.end) <= toMin(d.start)) {
-        // keep the same duration when the start moves past the end
-        const target = Math.min(toMin(d.start) + Math.max(len, 30), 23 * 60);
-        d.end = TIMES.find((t) => toMin(t) >= target) || TIMES[TIMES.length - 1];
-      }
+      const b = d.blocks[bi];
+      const others = dayMins(d) - blockMins(b);
+      const len = Math.max(30, Math.min(blockMins(b), DAILY_MAX - others));
+      const start = toMin(e.target.value);
+      b.start = e.target.value;
+      b.end = toTime(Math.min(start + len, DAY_END)); // keep the length, within the budget and the day
     });
   }
-  if (act === 'end') mutate((s) => { s[day].end = e.target.value; });
+  if (act === 'end') mutate((s) => { s[day].blocks[bi].end = e.target.value; });
 });
 
 document.addEventListener('submit', async (e) => {
@@ -662,13 +825,15 @@ document.addEventListener('submit', async (e) => {
   if (f.id === 'createForm') return submitCreate(f);
   if (f.dataset.add) {
     const day = f.dataset.add;
+    const bi = Number(f.dataset.b);
     const input = f.querySelector('input');
     const room = input.value.trim().replace(/\s+/g, ' ');
     if (!room) return;
     if (!/^[A-Za-z0-9][A-Za-z0-9 .\-]{0,23}$/.test(room)) return toast('Use just the room number, e.g. 507 or 324B', true);
-    if (state.draft[day].rooms.some((r) => r.toUpperCase() === room.toUpperCase())) return toast(`${room} is already on ${DAY_LABEL[day]}'s list`, true);
-    mutate((s) => s[day].rooms.push(room.toUpperCase()));
-    app.querySelector(`[data-focus="add-${day}"]`)?.focus();
+    const list = state.draft[day].blocks[bi].rooms;
+    if (list.some((r) => r.toUpperCase() === room.toUpperCase())) return toast(`${room} is already on this list`, true);
+    mutate((s) => s[day].blocks[bi].rooms.push(room.toUpperCase()));
+    app.querySelector(`[data-focus="add-${day}-${bi}"]`)?.focus();
     return;
   }
   if (f.id === 'credForm') {
