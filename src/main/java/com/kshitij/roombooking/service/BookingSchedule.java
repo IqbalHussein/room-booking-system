@@ -6,6 +6,7 @@ import com.kshitij.roombooking.model.BookingStage;
 import com.kshitij.roombooking.model.BookingWindow;
 import com.kshitij.roombooking.model.DayPlan;
 import com.kshitij.roombooking.model.Profile;
+import com.kshitij.roombooking.model.TimeBlock;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -17,6 +18,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Turns schedule JSON into {@link Profile}s.
@@ -27,8 +29,9 @@ import java.util.Map;
  * <li>the scheduler's export: {@code {"profiles":[{"id","name","username","password","schedule":{...}}]}}</li>
  * <li>a bare schedule (the bundled default): {@code {"schedule":{...}}}</li>
  * </ul>
- * A schedule maps weekday names to {@code {"enabled", "start":"HH:mm", "end":"HH:mm", "rooms":[...]}}.
- * Disabled days, and days without rooms, are dropped.
+ * A schedule maps weekday names to {@code {"enabled", "blocks":[{"start":"HH:mm","end":"HH:mm","rooms":[...]}]}}
+ * (the older single-window form {@code {"start","end","rooms"}} is still accepted).
+ * Disabled days, and blocks without rooms, are dropped.
  */
 public final class BookingSchedule {
 
@@ -49,12 +52,16 @@ public final class BookingSchedule {
             }
             List<Profile> parsed = new ArrayList<>();
             for (JsonNode p : profiles) {
-                parsed.add(new Profile(
-                        p.path("id").asText(),
-                        p.path("name").asText(p.path("id").asText()),
-                        p.path("username").asText(null),
-                        p.path("password").asText(null),
-                        parseSchedule(p.path("schedule"))));
+                String id = p.path("id").asText();
+                String name = p.path("name").asText(id);
+                String username = p.path("username").asText(null);
+                String password = p.path("password").asText(null);
+                try {
+                    parsed.add(new Profile(id, name, username, password, parseSchedule(p.path("schedule"))));
+                } catch (BookingException e) {
+                    // One bad schedule must not stop everyone else's bookings.
+                    parsed.add(new Profile(id, name, username, password, Map.of(), e.getMessage()));
+                }
             }
             return parsed;
         } catch (BookingException e) {
@@ -78,25 +85,41 @@ public final class BookingSchedule {
             if (!d.path("enabled").asBoolean(true)) {
                 continue;
             }
-            List<String> rooms = new ArrayList<>();
-            d.path("rooms").forEach(r -> {
-                String room = r.asText().trim();
-                if (!room.isEmpty()) {
-                    rooms.add(room);
-                }
-            });
-            if (rooms.isEmpty()) {
-                continue;
-            }
             try {
                 DayOfWeek day = DayOfWeek.valueOf(entry.getKey().trim().toUpperCase(Locale.ROOT));
-                plans.put(day, new DayPlan(BookingWindow.of(d.path("start").asText(), d.path("end").asText()), rooms));
+                // Current shape: {"blocks":[{start,end,rooms}]}; older shape: {start,end,rooms}.
+                List<TimeBlock> blocks = new ArrayList<>();
+                if (d.has("blocks")) {
+                    for (JsonNode b : d.path("blocks")) {
+                        parseBlock(b).ifPresent(blocks::add);
+                    }
+                } else {
+                    parseBlock(d).ifPresent(blocks::add);
+                }
+                if (!blocks.isEmpty()) {
+                    plans.put(day, new DayPlan(blocks));
+                }
             } catch (Exception e) {
                 throw new BookingException(BookingStage.CONFIG,
                         "Invalid schedule entry for '" + entry.getKey() + "': " + e.getMessage(), d.toString(), e);
             }
         }
         return plans;
+    }
+
+    /** A block without rooms is dropped rather than treated as an error. */
+    private static Optional<TimeBlock> parseBlock(JsonNode b) {
+        List<String> rooms = new ArrayList<>();
+        b.path("rooms").forEach(r -> {
+            String room = r.asText().trim();
+            if (!room.isEmpty()) {
+                rooms.add(room);
+            }
+        });
+        if (rooms.isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of(new TimeBlock(BookingWindow.of(b.path("start").asText(), b.path("end").asText()), rooms));
     }
 
     /** The bundled schedule used when no scheduler URL is configured. */

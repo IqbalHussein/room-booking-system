@@ -8,6 +8,7 @@ import com.kshitij.roombooking.model.Profile;
 import com.kshitij.roombooking.model.ProfileResult;
 import com.kshitij.roombooking.model.Slot;
 import com.kshitij.roombooking.model.SlotPlan;
+import com.kshitij.roombooking.model.TimeBlock;
 import io.github.bonigarcia.wdm.WebDriverManager;
 import org.openqa.selenium.By;
 import org.openqa.selenium.JavascriptExecutor;
@@ -22,9 +23,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -58,7 +61,14 @@ public class BookingService {
     /** gid=0 returns every item at the location; we filter by itemId ourselves. */
     private static final String GID = "0";
 
-    private static final int LOOKAHEAD_DAYS = 7;
+    /** Bookings are made exactly one week ahead. */
+    static final int LOOKAHEAD_DAYS = 7;
+    /**
+     * "Today" is the library's date, not the server's. The container clock is
+     * UTC, which runs ahead of Ottawa every evening -- a run started then would
+     * otherwise book 8 days out.
+     */
+    static final ZoneId LIBRARY_ZONE = ZoneId.of("America/Toronto");
 
     private static final Pattern SPACE_ID = Pattern.compile("/space/(\\d+)");
 
@@ -80,7 +90,15 @@ public class BookingService {
      */
     /** The date tonight's run books for. */
     public static LocalDate targetDate() {
-        return LocalDate.now().plusDays(LOOKAHEAD_DAYS);
+        return targetDate(Clock.system(LIBRARY_ZONE));
+    }
+
+    static LocalDate targetDate(Clock clock) {
+        return libraryToday(clock).plusDays(LOOKAHEAD_DAYS);
+    }
+
+    static LocalDate libraryToday(Clock clock) {
+        return LocalDate.now(clock.withZone(LIBRARY_ZONE));
     }
 
     public List<ProfileResult> bookAll() {
@@ -111,22 +129,64 @@ public class BookingService {
     }
 
     BookingResult bookFor(Profile profile, LocalDate targetDate, Map<String, List<Claim>> claimed) {
+        if (profile.problem() != null) {
+            return BookingResult.failed(BookingStage.CONFIG, "This profile's schedule couldn't be read.", profile.problem());
+        }
         Optional<DayPlan> scheduled = profile.planFor(targetDate.getDayOfWeek());
         if (scheduled.isEmpty()) {
             return BookingResult.skipped("Nothing scheduled for " + targetDate.getDayOfWeek() + " (" + targetDate + ").");
         }
-        DayPlan plan = scheduled.get();
-        BookingWindow window = plan.window();
-
         if (!profile.hasCredentials()) {
             return BookingResult.failed(BookingStage.CONFIG,
                     "No Carleton login is saved for this profile.",
                     "Add it under Settings in the scheduler (or set BOOKING_USERNAME / BOOKING_PASSWORD).");
         }
 
+        // Each block is its own LibCal booking. A failure (as opposed to a taken
+        // room) usually repeats -- bad login, changed markup -- so stop there.
+        List<BookingResult> results = new ArrayList<>();
+        for (TimeBlock block : scheduled.get().blocks()) {
+            BookingResult result = bookBlock(profile, block, targetDate, claimed);
+            results.add(result);
+            if (result.status() == BookingResult.Status.FAILED) {
+                break;
+            }
+        }
+        return combine(results, scheduled.get().blocks().size());
+    }
+
+    /**
+     * Folds per-block outcomes into one result for the profile: FAILED if any
+     * block failed, SUCCESS if at least one block was booked (the summary says
+     * how many), otherwise UNAVAILABLE.
+     */
+    static BookingResult combine(List<BookingResult> results, int blockCount) {
+        if (results.size() == 1 && blockCount == 1) {
+            return results.get(0);
+        }
+        List<String> lines = results.stream().map(BookingResult::render).toList();
+        String detail = String.join(" || ", lines);
+        long booked = results.stream().filter(r -> r.status() == BookingResult.Status.SUCCESS).count();
+        Optional<BookingResult> failed = results.stream()
+                .filter(r -> r.status() == BookingResult.Status.FAILED).findFirst();
+        if (failed.isPresent()) {
+            String prefix = booked > 0 ? "Booked " + booked + " of " + blockCount + " blocks, then: " : "";
+            return new BookingResult(BookingResult.Status.FAILED, prefix + failed.get().summary(), detail);
+        }
+        if (booked > 0) {
+            return new BookingResult(BookingResult.Status.SUCCESS,
+                    "Booked " + booked + " of " + blockCount + " blocks.", detail);
+        }
+        return new BookingResult(BookingResult.Status.UNAVAILABLE,
+                "None of the " + blockCount + " blocks could be booked.", detail);
+    }
+
+    private BookingResult bookBlock(Profile profile, TimeBlock block, LocalDate targetDate,
+                                    Map<String, List<Claim>> claimed) {
+        BookingWindow window = block.window();
         List<String> rooms = new ArrayList<>();
         List<String> notes = new ArrayList<>();
-        for (String room : plan.rooms()) {
+        for (String room : block.rooms()) {
             Optional<Claim> clash = claimed.getOrDefault(RoomNames.key(room), List.of()).stream()
                     .filter(c -> overlaps(c.window(), window))
                     .findFirst();
@@ -186,7 +246,7 @@ public class BookingService {
                 logger.info("Room {} -> {} (itemId {})", room, roomUrl, itemId);
 
                 driver.get(roomUrl);
-                goToDate(driver, wait, LocalDate.now(), targetDate);
+                goToDate(driver, wait, libraryToday(Clock.systemUTC()), targetDate);
 
                 List<Slot> all = AvailabilityGrid.parse(fetchGrid(js, targetDate));
                 List<Slot> mine = AvailabilityGrid.allSlotsFor(all, itemId);
