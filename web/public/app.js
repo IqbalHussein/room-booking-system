@@ -276,11 +276,10 @@ function renderPicker() {
   app.innerHTML = `
     <section class="intro">
       <h1>Who's booking?</h1>
-      <p class="muted">Every night the booker reserves a study room for each person, 7 days ahead. Pick your profile to change your rooms and times.</p>
     </section>
     ${state.profiles.length ? `<div class="tiles">${tiles}
       <button class="tile add" data-create><span class="plus" aria-hidden="true">+</span><span>New profile</span></button></div>`
-    : `<div class="empty"><h2>No profiles yet</h2><p class="muted">Make the first one. You'll need the invite code from whoever shared this page.</p>
+    : `<div class="empty"><h2>No profiles yet</h2>
       <button class="btn primary" data-create>Create a profile</button></div>`}`;
 }
 
@@ -291,7 +290,7 @@ function renderLock() {
     <button class="btn ghost small back" data-back>← All profiles</button>
     <section class="panel narrow lock">
       ${avatar(p.name, 'lg')}
-      <div><h2>Hi, ${esc(p.name)}</h2><p class="muted small">Enter your 4-digit passcode</p></div>
+      <h2>Hi, ${esc(p.name)}</h2>
       <div class="dots" id="dots" aria-hidden="true">${[0, 1, 2, 3].map((i) => `<span class="dot ${i < state.pin.length ? 'on' : ''}"></span>`).join('')}</div>
       <p class="sr-only" aria-live="polite">${state.pin.length} of 4 digits entered</p>
       <p class="msg ${locked ? 'bad' : ''}" id="lockMsg">${locked ? lockText() : ''}</p>
@@ -352,7 +351,7 @@ async function pressKey(k) {
       startLockTicker();
     } else if (e.status === 401 && msg) {
       msg.classList.add('bad');
-      msg.textContent = `Wrong passcode. ${e.data?.triesLeft ?? ''} ${e.data?.triesLeft === 1 ? 'try' : 'tries'} left before a short lockout.`;
+      msg.textContent = `Wrong passcode. ${e.data?.triesLeft ?? ''} ${e.data?.triesLeft === 1 ? 'try' : 'tries'} left left.`;
     } else if (e.status === 404) {
       toast(e.message, true);
       loadProfiles();
@@ -370,20 +369,20 @@ function renderCreate() {
     <button class="btn ghost small back" data-back>← All profiles</button>
     <section class="panel narrow">
       <form class="form" id="createForm" autocomplete="off">
-        <div><h2>New profile</h2><p class="muted small">Takes about a minute. You can change everything later.</p></div>
+        <h2>New profile</h2>
         <div class="field"><label for="cInvite">Invite code</label>
           <input class="input" id="cInvite" name="inviteCode" required autocapitalize="off" spellcheck="false">
           <span class="hint">Ask whoever shared this page.</span></div>
         <div class="field"><label for="cName">Your name</label>
           <input class="input" id="cName" name="name" required maxlength="24" placeholder="e.g. Sam"></div>
-        <div class="field"><label for="cPin">Pick a 4-digit passcode</label>
+        <div class="field"><label for="cPin">4-digit passcode</label>
           <input class="input pin-input" id="cPin" name="passcode" required inputmode="numeric" pattern="\\d{4}" maxlength="4" autocomplete="new-password">
-          <span class="hint">You'll type this to open your profile.</span></div>
+</div>
         <div class="field"><label for="cUser">Carleton username</label>
           <input class="input" id="cUser" name="username" required autocapitalize="off" spellcheck="false" autocomplete="username"></div>
         <div class="field"><label for="cPass">Carleton password</label>
           <input class="input" id="cPass" name="password" type="password" required autocomplete="current-password"></div>
-        <p class="note"><span aria-hidden="true">🔒</span><span>The booker signs in as you to make your bookings. Your login is stored encrypted and is never shown again, not even to you.</span></p>
+        <p class="note"><span aria-hidden="true">🔒</span><span>Stored encrypted. Only used to make your bookings.</span></p>
         <p class="err" id="cErr" role="alert"></p>
         <button class="btn primary" type="submit">Create profile</button>
       </form>
@@ -403,7 +402,7 @@ async function submitCreate(form) {
   btn.textContent = 'Creating…';
   try {
     const { token, profile } = await api('/api/profiles', { method: 'POST', auth: false, body: data });
-    toast(`Welcome, ${profile.name}! Turn on the days you want.`);
+    toast(`Welcome, ${profile.name}!`);
     enterEditor(token, profile);
   } catch (e) {
     err.textContent = e.message;
@@ -430,23 +429,21 @@ function agendaHtml(p, next) {
     if (result) {
       rows.push(`<li class="ag-row"><div class="ag-date"><strong>${when}</strong><span>${date}</span></div>
         <div class="ag-body"><span class="pill ${esc(result.status)}">${STATUS_LABEL[result.status] || esc(result.status)}</span>
-        <span class="small">${esc(result.summary || '')}</span></div></li>`);
+        <span class="small">${esc(String(result.summary || '').replace(/ on \d{4}-\d{2}-\d{2}/, ''))}</span></div></li>`);
     } else if (iso === next.targetISO) {
       const d = p.schedule[next.dayKey];
       const body = p.paused
-        ? '<span class="pill paused">Paused</span><span class="small muted">Nothing will be booked while paused.</span>'
+        ? '<span class="pill paused">Paused</span>'
         : d.enabled
           ? `<span class="pill pending">Books ${esc(next.label)}</span>
              <span class="small">${d.blocks.map((b) => `${fmtRange(b)} · ${esc(b.rooms.join(' → '))}`).join('<br>')}</span>`
-          : `<span class="pill none">Nothing to book</span><span class="small muted">${DAY_LABEL[next.dayKey]} is off in your schedule.</span>`;
+          : '<span class="pill none">Nothing scheduled</span>';
       rows.push(`<li class="ag-row next"><div class="ag-date"><strong>${when}</strong><span>${date}</span></div><div class="ag-body">${body}</div></li>`);
     }
   }
   return `<section class="agenda" aria-labelledby="agTitle">
-    <div class="section-title"><h2 id="agTitle">Coming up</h2>
-      <span class="small muted">Each night at 12:01 AM ET, the booker books 7 days ahead</span></div>
+    <div class="section-title"><h2 id="agTitle">Coming up</h2></div>
     <ul class="ag-list">${rows.join('')}</ul>
-    ${rows.length === 1 && !(p.lastResults || []).length ? '<p class="small muted ag-foot">Bookings show up here as they’re made.</p>' : ''}
   </section>`;
 }
 
@@ -517,16 +514,16 @@ function dayCard(day, conflicts, problems) {
       const clashes = mine.filter((c) => c.block === bi);
       const clashRooms = new Set(clashes.map((c) => c.room.toUpperCase()));
       return `<div class="block">
-        <div class="block-head">
-          <span class="block-title">${d.blocks.length > 1 ? `Block ${bi + 1}` : 'Time'}</span>
-          ${d.blocks.length > 1 ? `<button class="btn ghost small" data-act="rm-block" data-day="${day}" data-b="${bi}">Remove block</button>` : ''}
-        </div>
+        ${d.blocks.length > 1 ? `<div class="block-head">
+          <span class="block-title">Block ${bi + 1}</span>
+          <button class="btn ghost small" data-act="rm-block" data-day="${day}" data-b="${bi}">Remove</button>
+        </div>` : ''}
         <div class="times">
           <select data-act="start" data-day="${day}" data-b="${bi}" aria-label="${DAY_LABEL[day]} block ${bi + 1} start">${startOptions(b.start)}</select>
           <span class="muted">to</span>
           <select data-act="end" data-day="${day}" data-b="${bi}" aria-label="${DAY_LABEL[day]} block ${bi + 1} end">${endOptions(d, bi)}</select>
         </div>
-        <div class="rooms-label">${b.rooms.length > 1 ? 'Rooms, tried in this order until one is free' : b.rooms.length ? 'Room. Add a backup in case it’s taken' : 'Which room?'}</div>
+        ${b.rooms.length > 1 ? '<div class="rooms-label">Tried in order</div>' : ''}
         <div class="chips">
           ${chipsHtml(day, bi, b, clashRooms)}
           ${b.rooms.length < MAX_ROOMS ? `<form class="add-room" data-add="${day}" data-b="${bi}">
@@ -544,17 +541,15 @@ function dayCard(day, conflicts, problems) {
     body = `<div class="day-body" id="body-${day}">
       <div class="budget ${used > DAILY_MAX ? 'over' : ''}">
         <div class="budget-bar"><span style="width:${Math.min(100, (used / DAILY_MAX) * 100)}%"></span></div>
-        <span class="small">${fmtHM(used)} of 3h daily limit${used < DAILY_MAX ? ` · ${fmtHM(left)} left` : ''}</span>
+        <span class="small">${fmtHM(used)} / 3h</span>
       </div>
       ${blocks}
       ${issues.length ? `<ul class="issues" role="alert">${issues.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
       <div class="day-foot">
-        ${canAdd ? `<button class="btn small" data-act="add-block" data-day="${day}">+ Add another block</button>`
-          : `<span class="small muted">${left < 30 ? 'Daily limit reached' : `Up to ${MAX_BLOCKS} blocks`}</span>`}
-        ${state.copyFor === day ? '' : `<button class="btn small ghost" data-act="copy" data-day="${day}">Copy to other days…</button>`}
+        ${canAdd ? `<button class="btn small" data-act="add-block" data-day="${day}">+ Add block</button>` : '<span></span>'}
+        ${state.copyFor === day ? '' : `<button class="btn small ghost" data-act="copy" data-day="${day}">Copy to…</button>`}
       </div>
       ${state.copyFor === day ? `<div class="copy-pop">
-        <span class="small muted">Copy ${DAY_LABEL[day]}'s blocks and rooms to:</span>
         <div class="copy-days">${DAYS.filter((x) => x !== day).map((x) => `
           <label><input type="checkbox" value="${x}" data-copy-day> ${DAY_LABEL[x].slice(0, 3)}</label>`).join('')}</div>
         <div class="row"><button class="btn small primary" data-act="copy-apply" data-day="${day}">Apply</button>
@@ -585,25 +580,21 @@ function renderEditor() {
   const conflicts = p.paused ? [] : conflictsFor(state.draft, state.claims);
   const problems = problemsFor(state.draft);
   const problemCount = Object.values(problems).flat().length;
-  const active = DAYS.filter((d) => state.draft[d].enabled);
-  const weekly = active.reduce((s, d) => s + dayMins(state.draft[d]), 0);
 
   app.innerHTML = `
     <section class="ed-head">
       ${avatar(p.name)}
-      <div class="grow"><h1>${esc(p.name)}</h1>
-        <p class="muted small">${active.length ? `${fmtHM(weekly)} a week across ${active.length} ${active.length === 1 ? 'day' : 'days'}` : 'No days on yet. Switch one on below to start.'}</p></div>
+      <div class="grow"><h1>${esc(p.name)}</h1></div>
     </section>
 
-    ${p.paused ? `<div class="banner"><span><strong>Bookings are paused.</strong> Nothing will be booked for you until you resume.</span>
+    ${p.paused ? `<div class="banner"><span><strong>Bookings are paused.</strong></span>
       <button class="btn small primary" data-act="unpause">Resume</button></div>` : ''}
-    ${!p.hasPassword ? `<div class="banner"><span><strong>No Carleton login saved.</strong> Add it under Settings or bookings will fail.</span></div>` : ''}
+    ${!p.hasPassword ? `<div class="banner"><span><strong>No Carleton login saved.</strong> Add it under Settings.</span></div>` : ''}
 
     ${agendaHtml(p, next)}
 
     <section aria-labelledby="wkTitle">
-      <div class="section-title"><h2 id="wkTitle">Weekly schedule</h2>
-        <span class="small muted">Up to 3h a day, split however you like</span></div>
+      <div class="section-title"><h2 id="wkTitle">Weekly schedule</h2></div>
       <div class="days">
         <div class="axis" aria-hidden="true"><div class="day-row"><span></span><span class="day-open">
           <span></span><span class="axis-line">${[9, 12, 15, 18, 21].map((h) =>
@@ -622,7 +613,7 @@ function renderEditor() {
       </div></details>` : ''}
       <details class="card"><summary>Carleton login</summary><form class="inner" id="credForm" autocomplete="off">
         <div class="field"><label for="sUser">Username</label><input class="input" id="sUser" name="username" value="${esc(p.username)}" required autocapitalize="off" spellcheck="false"></div>
-        <div class="field"><label for="sPass">Password</label><input class="input" id="sPass" name="password" type="password" placeholder="${p.hasPassword ? '•••••••• (saved, leave blank to keep)' : 'Enter your password'}" autocomplete="new-password"></div>
+        <div class="field"><label for="sPass">Password</label><input class="input" id="sPass" name="password" type="password" placeholder="${p.hasPassword ? 'Saved. Leave blank to keep' : ''}" autocomplete="new-password"></div>
         <div><button class="btn primary" type="submit">Update login</button></div></form></details>
       <details class="card"><summary>Passcode</summary><form class="inner" id="pinForm" autocomplete="off">
         <div class="row">
@@ -678,9 +669,9 @@ async function save() {
   if (conflicts.length) {
     const ok = await modal({
       title: 'Some rooms overlap with friends',
-      html: `<p style="margin-bottom:10px">Once a room is booked, nobody else can book it. These overlap:</p>
+      html: `<p style="margin-bottom:10px">Only one of you can get each of these:</p>
         <ul>${conflicts.map((c) => `<li>${DAY_LABEL[c.day]} ${fmtRange(state.draft[c.day].blocks[c.block])}: <strong>${esc(c.room)}</strong>, also wanted by ${esc(c.profileName)}</li>`).join('')}</ul>
-        <p style="margin-top:10px">You can still save. Whoever doesn't get the room falls back to their next choice.</p>`,
+`,
       confirm: 'Save anyway',
       cancel: 'Keep editing',
     });
