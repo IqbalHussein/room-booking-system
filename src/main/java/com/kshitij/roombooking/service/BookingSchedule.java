@@ -1,24 +1,121 @@
 package com.kshitij.roombooking.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kshitij.roombooking.model.BookingStage;
 import com.kshitij.roombooking.model.BookingWindow;
+import com.kshitij.roombooking.model.DayPlan;
+import com.kshitij.roombooking.model.Profile;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.time.DayOfWeek;
+import java.util.ArrayList;
+import java.util.EnumMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 
-/** The weekly booking schedule: Mon/Wed 8:30-10:30am, Thu/Fri 2:30-5:30pm. */
+/**
+ * Turns schedule JSON into {@link Profile}s.
+ *
+ * <p>
+ * Two shapes are accepted:
+ * <ul>
+ * <li>the scheduler's export: {@code {"profiles":[{"id","name","username","password","schedule":{...}}]}}</li>
+ * <li>a bare schedule (the bundled default): {@code {"schedule":{...}}}</li>
+ * </ul>
+ * A schedule maps weekday names to {@code {"enabled", "start":"HH:mm", "end":"HH:mm", "rooms":[...]}}.
+ * Disabled days, and days without rooms, are dropped.
+ */
 public final class BookingSchedule {
 
-    private static final Map<DayOfWeek, BookingWindow> SCHEDULE = Map.of(
-            DayOfWeek.MONDAY, BookingWindow.of("08:30", "10:30"),
-            DayOfWeek.WEDNESDAY, BookingWindow.of("08:30", "10:30"),
-            DayOfWeek.THURSDAY, BookingWindow.of("14:30", "17:30"),
-            DayOfWeek.FRIDAY, BookingWindow.of("14:30", "17:30"));
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    public static final String DEFAULT_RESOURCE = "/default-schedule.json";
 
     private BookingSchedule() {
     }
 
-    public static Optional<BookingWindow> windowFor(DayOfWeek day) {
-        return Optional.ofNullable(SCHEDULE.get(day));
+    /** Parses the scheduler export into profiles. */
+    public static List<Profile> parseProfiles(String json) throws BookingException {
+        try {
+            JsonNode root = MAPPER.readTree(json);
+            JsonNode profiles = root.path("profiles");
+            if (!profiles.isArray()) {
+                throw new BookingException(BookingStage.CONFIG,
+                        "Schedule export had no 'profiles' array.", snippet(json));
+            }
+            List<Profile> parsed = new ArrayList<>();
+            for (JsonNode p : profiles) {
+                parsed.add(new Profile(
+                        p.path("id").asText(),
+                        p.path("name").asText(p.path("id").asText()),
+                        p.path("username").asText(null),
+                        p.path("password").asText(null),
+                        parseSchedule(p.path("schedule"))));
+            }
+            return parsed;
+        } catch (BookingException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new BookingException(BookingStage.CONFIG,
+                    "Could not read the schedule export: " + e.getMessage(), snippet(json), e);
+        }
+    }
+
+    /** Parses one {@code schedule} object (weekday name -> day settings). */
+    public static Map<DayOfWeek, DayPlan> parseSchedule(JsonNode schedule) throws BookingException {
+        Map<DayOfWeek, DayPlan> plans = new EnumMap<>(DayOfWeek.class);
+        if (schedule == null || !schedule.isObject()) {
+            return plans;
+        }
+        Iterator<Map.Entry<String, JsonNode>> days = schedule.fields();
+        while (days.hasNext()) {
+            Map.Entry<String, JsonNode> entry = days.next();
+            JsonNode d = entry.getValue();
+            if (!d.path("enabled").asBoolean(true)) {
+                continue;
+            }
+            List<String> rooms = new ArrayList<>();
+            d.path("rooms").forEach(r -> {
+                String room = r.asText().trim();
+                if (!room.isEmpty()) {
+                    rooms.add(room);
+                }
+            });
+            if (rooms.isEmpty()) {
+                continue;
+            }
+            try {
+                DayOfWeek day = DayOfWeek.valueOf(entry.getKey().trim().toUpperCase(Locale.ROOT));
+                plans.put(day, new DayPlan(BookingWindow.of(d.path("start").asText(), d.path("end").asText()), rooms));
+            } catch (Exception e) {
+                throw new BookingException(BookingStage.CONFIG,
+                        "Invalid schedule entry for '" + entry.getKey() + "': " + e.getMessage(), d.toString(), e);
+            }
+        }
+        return plans;
+    }
+
+    /** The bundled schedule used when no scheduler URL is configured. */
+    public static Map<DayOfWeek, DayPlan> defaultSchedule() throws BookingException {
+        try (InputStream in = BookingSchedule.class.getResourceAsStream(DEFAULT_RESOURCE)) {
+            if (in == null) {
+                throw new BookingException(BookingStage.CONFIG, DEFAULT_RESOURCE + " is missing from the jar.");
+            }
+            String json = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            return parseSchedule(MAPPER.readTree(json).path("schedule"));
+        } catch (IOException e) {
+            throw new BookingException(BookingStage.CONFIG, "Could not read " + DEFAULT_RESOURCE, null, e);
+        }
+    }
+
+    private static String snippet(String json) {
+        if (json == null) {
+            return "empty response";
+        }
+        return "response started with: " + json.substring(0, Math.min(200, json.length()));
     }
 }

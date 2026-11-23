@@ -3,6 +3,9 @@ package com.kshitij.roombooking.service;
 import com.kshitij.roombooking.model.BookingResult;
 import com.kshitij.roombooking.model.BookingStage;
 import com.kshitij.roombooking.model.BookingWindow;
+import com.kshitij.roombooking.model.DayPlan;
+import com.kshitij.roombooking.model.Profile;
+import com.kshitij.roombooking.model.ProfileResult;
 import com.kshitij.roombooking.model.Slot;
 import com.kshitij.roombooking.model.SlotPlan;
 import io.github.bonigarcia.wdm.WebDriverManager;
@@ -22,13 +25,17 @@ import org.springframework.stereotype.Service;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Books the scheduled room by reading LibCal's availability JSON for exact slot
+ * Books each profile's scheduled room by reading LibCal's availability JSON for exact slot
  * times, then driving the browser to click the matching cell.
  *
  * <p>
@@ -51,46 +58,113 @@ public class BookingService {
     /** gid=0 returns every item at the location; we filter by itemId ourselves. */
     private static final String GID = "0";
 
-    private static final String TARGET_ROOM = "507";
     private static final int LOOKAHEAD_DAYS = 7;
 
     private static final Pattern SPACE_ID = Pattern.compile("/space/(\\d+)");
 
-    public BookingResult bookRoom() {
-        LocalDate today = LocalDate.now();
-        LocalDate targetDate = today.plusDays(LOOKAHEAD_DAYS);
+    private final ScheduleSource scheduleSource;
 
-        Optional<BookingWindow> scheduled = BookingSchedule.windowFor(targetDate.getDayOfWeek());
-        if (scheduled.isEmpty()) {
-            String msg = "Nothing scheduled for " + targetDate.getDayOfWeek() + " (" + targetDate + ").";
-            logger.info(msg);
-            return BookingResult.skipped(msg);
+    public BookingService(ScheduleSource scheduleSource) {
+        this.scheduleSource = scheduleSource;
+    }
+
+    /** A room this run already booked, so later profiles don't waste a browser on it. */
+    private record Claim(BookingWindow window, String profileName) {
+    }
+
+    /**
+     * Books for every profile, one after another. Profiles are processed in the
+     * order the scheduler returns them; a room booked for an earlier profile is
+     * skipped for later ones with an overlapping window, so they go straight to
+     * their next backup room.
+     */
+    /** The date tonight's run books for. */
+    public static LocalDate targetDate() {
+        return LocalDate.now().plusDays(LOOKAHEAD_DAYS);
+    }
+
+    public List<ProfileResult> bookAll() {
+        LocalDate targetDate = targetDate();
+
+        List<Profile> profiles;
+        try {
+            profiles = scheduleSource.load();
+        } catch (BookingException e) {
+            logger.error("[{}] {}{}", e.stage(), e.getMessage(), e.detail() == null ? "" : " | " + e.detail(), e);
+            return List.of(new ProfileResult("-", "config",
+                    BookingResult.failed(e.stage(), e.getMessage(), e.detail())));
         }
-        BookingWindow window = scheduled.get();
+        if (profiles.isEmpty()) {
+            return List.of(new ProfileResult("-", "config",
+                    BookingResult.skipped("No profiles are configured in the scheduler.")));
+        }
+
+        Map<String, List<Claim>> claimed = new HashMap<>();
+        List<ProfileResult> results = new ArrayList<>();
+        for (Profile profile : profiles) {
+            BookingResult result = bookFor(profile, targetDate, claimed);
+            ProfileResult attributed = new ProfileResult(profile.id(), profile.name(), result);
+            logger.info(attributed.render());
+            results.add(attributed);
+        }
+        return results;
+    }
+
+    BookingResult bookFor(Profile profile, LocalDate targetDate, Map<String, List<Claim>> claimed) {
+        Optional<DayPlan> scheduled = profile.planFor(targetDate.getDayOfWeek());
+        if (scheduled.isEmpty()) {
+            return BookingResult.skipped("Nothing scheduled for " + targetDate.getDayOfWeek() + " (" + targetDate + ").");
+        }
+        DayPlan plan = scheduled.get();
+        BookingWindow window = plan.window();
+
+        if (!profile.hasCredentials()) {
+            return BookingResult.failed(BookingStage.CONFIG,
+                    "No Carleton login is saved for this profile.",
+                    "Add it under Settings in the scheduler (or set BOOKING_USERNAME / BOOKING_PASSWORD).");
+        }
+
+        List<String> rooms = new ArrayList<>();
+        List<String> notes = new ArrayList<>();
+        for (String room : plan.rooms()) {
+            Optional<Claim> clash = claimed.getOrDefault(RoomNames.key(room), List.of()).stream()
+                    .filter(c -> overlaps(c.window(), window))
+                    .findFirst();
+            if (clash.isPresent()) {
+                notes.add(room + ": taken by " + clash.get().profileName() + " this run");
+            } else {
+                rooms.add(room);
+            }
+        }
+        if (rooms.isEmpty()) {
+            return BookingResult.unavailable(
+                    "Every room on the list was already booked by another profile for " + window + " on " + targetDate + ".",
+                    String.join("; ", notes));
+        }
 
         try {
-            // Fail fast: no point spending a minute in the browser without these.
-            String username = requireEnv("BOOKING_USERNAME");
-            String password = requireEnv("BOOKING_PASSWORD");
-
-            logger.info("Booking room {} on {} ({}) for {} [{} minutes]",
-                    TARGET_ROOM, targetDate, targetDate.getDayOfWeek(), window, window.durationMinutes());
-
-            return runBooking(targetDate, window, username, password);
-
+            logger.info("[{}] Booking {} on {} ({}) for {} [{} minutes], rooms in order: {}",
+                    profile.name(), rooms.get(0), targetDate, targetDate.getDayOfWeek(), window,
+                    window.durationMinutes(), rooms);
+            return runBooking(targetDate, window, rooms, notes, profile, claimed);
         } catch (BookingException e) {
-            logger.error("[{}] {}{}", e.stage(), e.getMessage(),
+            logger.error("[{}] [{}] {}{}", profile.name(), e.stage(), e.getMessage(),
                     e.detail() == null ? "" : " | " + e.detail(), e);
             return BookingResult.failed(e.stage(), e.getMessage(), e.detail());
         } catch (Exception e) {
-            logger.error("Unexpected failure", e);
+            logger.error("[{}] Unexpected failure", profile.name(), e);
             return BookingResult.failed(BookingStage.CONFIRM,
                     "Unexpected " + e.getClass().getSimpleName() + ": " + e.getMessage(), null);
         }
     }
 
-    private BookingResult runBooking(LocalDate targetDate, BookingWindow window,
-                                     String username, String password) throws BookingException {
+    static boolean overlaps(BookingWindow a, BookingWindow b) {
+        return a.start().isBefore(b.end()) && b.start().isBefore(a.end());
+    }
+
+    private BookingResult runBooking(LocalDate targetDate, BookingWindow window, List<String> rooms,
+                                     List<String> notes, Profile profile, Map<String, List<Claim>> claimed)
+            throws BookingException {
         WebDriverManager.chromedriver().setup();
         WebDriver driver = new ChromeDriver(chromeOptions());
 
@@ -99,53 +173,70 @@ public class BookingService {
             driver.manage().timeouts().scriptTimeout(Duration.ofSeconds(30));
             JavascriptExecutor js = (JavascriptExecutor) driver;
 
-            String roomUrl = resolveRoomUrl(driver, wait, js);
-            long itemId = spaceIdFrom(roomUrl);
-            logger.info("Room {} -> {} (itemId {})", TARGET_ROOM, roomUrl, itemId);
+            Map<String, String> urls = resolveRoomUrls(driver, wait, js, rooms);
 
-            driver.get(roomUrl);
-            goToDate(driver, wait, LocalDate.now(), targetDate);
+            for (int choice = 0; choice < rooms.size(); choice++) {
+                String room = rooms.get(choice);
+                String roomUrl = urls.get(room);
+                if (roomUrl == null) {
+                    notes.add(room + ": not in LibCal's room list");
+                    continue;
+                }
+                long itemId = spaceIdFrom(roomUrl);
+                logger.info("Room {} -> {} (itemId {})", room, roomUrl, itemId);
 
-            List<Slot> all = AvailabilityGrid.parse(fetchGrid(js, targetDate));
-            List<Slot> mine = AvailabilityGrid.allSlotsFor(all, itemId);
-            if (mine.isEmpty()) {
-                throw new BookingException(BookingStage.GRID_PARSE,
-                        "Availability response contained no cells for itemId " + itemId + ".",
-                        "response held " + all.size() + " cells across other rooms");
+                driver.get(roomUrl);
+                goToDate(driver, wait, LocalDate.now(), targetDate);
+
+                List<Slot> all = AvailabilityGrid.parse(fetchGrid(js, targetDate));
+                List<Slot> mine = AvailabilityGrid.allSlotsFor(all, itemId);
+                if (mine.isEmpty()) {
+                    throw new BookingException(BookingStage.GRID_PARSE,
+                            "Availability response contained no cells for room " + room + " (itemId " + itemId + ").",
+                            "response held " + all.size() + " cells across other rooms");
+                }
+                List<Slot> free = AvailabilityGrid.freeSlotsFor(all, itemId);
+                logger.info("Room {} on {}: {} cells, {} free. Free blocks: {}",
+                        room, targetDate, mine.size(), free.size(), AvailabilityGrid.describe(free));
+
+                // The page renders exactly the free cells as clickable elements. If those
+                // counts diverge, the JSON and the DOM disagree and clicking by index
+                // would hit the wrong slot -- so refuse rather than mis-book.
+                List<WebElement> cells = driver.findElements(By.className("s-lc-eq-avail"));
+                if (cells.size() != free.size()) {
+                    throw new BookingException(BookingStage.GRID_MISMATCH,
+                            "JSON reports " + free.size() + " free cells for room " + room
+                                    + " but the page shows " + cells.size() + ". Refusing to click by index.",
+                            "This usually means LibCal changed their markup. Free blocks per JSON: "
+                                    + AvailabilityGrid.describe(free));
+                }
+
+                SlotPlan slotPlan = AvailabilityGrid.plan(free, targetDate, window);
+                if (!slotPlan.bookable()) {
+                    logger.info("Room {} cannot take {} on {}: {}", room, window, targetDate, slotPlan.reason());
+                    notes.add(room + ": " + slotPlan.reason());
+                    continue;
+                }
+
+                logger.info("Clicking free cell #{} ({})", slotPlan.freeSlotIndex(), slotPlan.start());
+                clickCell(driver, wait, js, cells.get(slotPlan.freeSlotIndex()));
+                selectEnd(driver, wait, slotPlan.end());
+                submitTimes(driver, wait, js);
+                signIn(driver, wait, profile.username(), profile.password());
+                confirm(driver, wait, js);
+
+                claimed.computeIfAbsent(RoomNames.key(room), k -> new ArrayList<>())
+                        .add(new Claim(window, profile.name()));
+                String summary = "Booked room " + room + " on " + targetDate + " " + window
+                        + (choice == 0 && notes.isEmpty() ? "." : " (backup choice).");
+                return notes.isEmpty()
+                        ? BookingResult.success(summary)
+                        : new BookingResult(BookingResult.Status.SUCCESS, summary, String.join("; ", notes));
             }
-            List<Slot> free = AvailabilityGrid.freeSlotsFor(all, itemId);
-            logger.info("Room {} on {}: {} cells, {} free. Free blocks: {}",
-                    TARGET_ROOM, targetDate, mine.size(), free.size(), AvailabilityGrid.describe(free));
 
-            // The page renders exactly the free cells as clickable elements. If those
-            // counts diverge, the JSON and the DOM disagree and clicking by index
-            // would hit the wrong slot -- so refuse rather than mis-book.
-            List<WebElement> cells = driver.findElements(By.className("s-lc-eq-avail"));
-            if (cells.size() != free.size()) {
-                throw new BookingException(BookingStage.GRID_MISMATCH,
-                        "JSON reports " + free.size() + " free cells but the page shows " + cells.size()
-                                + ". Refusing to click by index.",
-                        "This usually means LibCal changed their markup. Free blocks per JSON: "
-                                + AvailabilityGrid.describe(free));
-            }
-
-            SlotPlan plan = AvailabilityGrid.plan(free, targetDate, window);
-            if (!plan.bookable()) {
-                String msg = "Room " + TARGET_ROOM + " cannot take " + window + " on " + targetDate + ".";
-                logger.info("{} {}", msg, plan.reason());
-                return BookingResult.unavailable(msg, plan.reason());
-            }
-
-            logger.info("Clicking free cell #{} ({})", plan.freeSlotIndex(), plan.start());
-            clickCell(driver, wait, js, cells.get(plan.freeSlotIndex()));
-            selectEnd(driver, wait, plan.end());
-            submitTimes(driver, wait, js);
-            signIn(driver, wait, username, password);
-            confirm(driver, wait, js);
-
-            String summary = "Booked room " + TARGET_ROOM + " on " + targetDate + " " + window + ".";
-            logger.info(summary);
-            return BookingResult.success(summary);
+            return BookingResult.unavailable(
+                    "None of " + rooms + " could take " + window + " on " + targetDate + ".",
+                    String.join("; ", notes));
 
         } finally {
             driver.quit();
@@ -163,19 +254,13 @@ public class BookingService {
         return options;
     }
 
-    private static String requireEnv(String name) throws BookingException {
-        String value = System.getenv(name);
-        if (value == null || value.isBlank()) {
-            throw new BookingException(BookingStage.CONFIG,
-                    "Environment variable " + name + " is not set.",
-                    "Set it as a GitHub Actions secret and pass it through to the container.");
-        }
-        return value;
-    }
-
-    /** Finds the room's own space URL, so we can navigate straight to it. */
-    private String resolveRoomUrl(WebDriver driver, WebDriverWait wait, JavascriptExecutor js)
-            throws BookingException {
+    /**
+     * Loads the room list once and finds the space URL for each wanted room.
+     * Rooms that aren't listed are simply absent from the map; it's only an
+     * error when none of them are found.
+     */
+    private Map<String, String> resolveRoomUrls(WebDriver driver, WebDriverWait wait, JavascriptExecutor js,
+                                                List<String> rooms) throws BookingException {
         try {
             driver.get(HOME);
             wait.until(ExpectedConditions.elementToBeClickable(By.linkText(ROOMS_LINK))).click();
@@ -195,25 +280,30 @@ public class BookingService {
             List<WebElement> links = wait.until(ExpectedConditions.presenceOfAllElementsLocatedBy(
                     By.xpath("//a[contains(@href, '/space/')]")));
 
-            List<String> seen = new java.util.ArrayList<>();
+            Map<String, String> found = new LinkedHashMap<>();
+            List<String> seen = new ArrayList<>();
             for (WebElement link : links) {
                 // textContent, not getText(): the latter is empty for off-screen elements.
                 String name = String.valueOf(link.getAttribute("textContent")).trim();
                 seen.add(name);
-                if (name.startsWith(TARGET_ROOM)) {
-                    return link.getAttribute("href");
+                for (String room : rooms) {
+                    if (!found.containsKey(room) && RoomNames.matches(name, room)) {
+                        found.put(room, link.getAttribute("href"));
+                    }
                 }
             }
-            throw new BookingException(BookingStage.ROOM_LOOKUP,
-                    "Room " + TARGET_ROOM + " was not in the room list.", "saw: " + seen);
+            if (found.isEmpty()) {
+                throw new BookingException(BookingStage.ROOM_LOOKUP,
+                        "None of " + rooms + " were in the room list.", "saw: " + seen);
+            }
+            return found;
         } catch (BookingException e) {
             throw e;
         } catch (Exception e) {
             throw new BookingException(BookingStage.ROOM_LOOKUP,
-                    "Could not resolve room " + TARGET_ROOM + ": " + e.getMessage(), null, e);
+                    "Could not load the room list: " + e.getMessage(), null, e);
         }
     }
-
     private static long spaceIdFrom(String url) throws BookingException {
         Matcher m = SPACE_ID.matcher(url);
         if (!m.find()) {

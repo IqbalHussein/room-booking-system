@@ -1,19 +1,20 @@
 # Carleton Library Room Booking System
 
-carleton university's library rooms are booked pretty regularly by students and get filled up super fast, which i didn't like. so i made an automated room booker using **java** and **selenium webdriver**, and made it into a **spring boot** microservice which runs every night on **docker** containers. books room 507 on a fixed weekly schedule.
+carleton university's library rooms are booked pretty regularly by students and get filled up super fast, which i didn't like. so i made an automated room booker using **java** and **selenium webdriver**, and made it into a **spring boot** microservice which runs every night on **docker** containers. each person picks their own rooms and times in a small web app, and the booker grabs them every night.
 
-## 📅 schedule
+## 📅 schedule (no more hardcoding)
 
-all bookings are made in **room 507**, 7 days ahead:
+rooms and times are set in the **scheduler web app**: https://room-booking-scheduler.vercel.app
 
-| day | time |
-| --- | --- |
-| monday | 8:30 - 10:30 AM |
-| wednesday | 8:30 - 10:30 AM |
-| thursday | 2:30 - 5:30 PM |
-| friday | 2:30 - 5:30 PM |
+*   **profiles**: each person gets their own profile, opened with a 4-digit passcode. a profile holds that person's carleton login, so every booking is made under their own account.
+*   **weekly editor**: turn days on and off, pick start/end times in 30-minute steps, and list up to 5 rooms per day **in priority order**. if the first room is taken, the booker tries the next one.
+*   **conflict warnings**: once a room is booked, no one else can book it. if another profile wants the same room at an overlapping time, the editor flags it (and says whose booking runs first).
+*   **results**: each night's outcome (booked / taken / failed) shows up on the profile.
+*   **security**: profile records are AES-256-GCM encrypted in a private vercel blob store. 5 wrong passcodes lock the profile for 15 minutes (doubling each time). new profiles need an invite code.
 
-runs on other days are skipped (nothing is scheduled for them).
+the nightly job books 7 days ahead for every profile, one after another in the order the profiles were created. a room booked by an earlier profile in the same run is skipped for later ones, which go straight to their backup rooms.
+
+if no scheduler is configured, the service falls back to `src/main/resources/default-schedule.json` (room 507, mon/wed 8:30-10:30am, thu/fri 2:30-5:30pm) with `BOOKING_USERNAME` / `BOOKING_PASSWORD`.
 
 ## 🧪 tests
 
@@ -21,7 +22,7 @@ runs on other days are skipped (nothing is scheduled for them).
 mvn test
 ```
 
-slot matching, schedule lookup and grid parsing are unit-tested against fixed libcal payloads, so they run without a browser or network.
+slot matching, schedule parsing, room-name matching and grid parsing are unit-tested against fixed libcal payloads, so they run without a browser or network.
 
 ## 🚀 key features
 
@@ -45,9 +46,15 @@ this method requires no local java or chrome setup
 2.  **run the container**:
     ```bash
     docker run -p 8080:8080 \
-       -e BOOKING_USERNAME="your_username" \
-       -e BOOKING_PASSWORD="your_password" \
+       -e BOOKING_CONFIG_URL="https://room-booking-scheduler.vercel.app" \
+       -e BOOKING_SYNC_TOKEN="your_sync_token" \
        roombooking
+    ```
+    (or pass `BOOKING_USERNAME` / `BOOKING_PASSWORD` instead to use the bundled default schedule.)
+
+3.  **trigger a run**:
+    ```bash
+    curl -X POST localhost:8080/api/v1/book
     ```
 
 ### option 2: local java
@@ -59,9 +66,28 @@ this method requires no local java or chrome setup
     ./mvnw spring-boot:run
     ```
 
-## 📦 deployment (github actions)
+## 📦 deployment
 
-this repo has a `.github/workflows/nightly_booking.yml` file.
+### scheduler web app (`web/`, vercel)
+static ui + node serverless functions + vercel blob storage. no build step.
+
+| env var (vercel) | purpose |
+| --- | --- |
+| `BLOB_READ_WRITE_TOKEN` | added automatically when the blob store is connected |
+| `ENCRYPTION_KEY` | encrypts profile records and signs sessions. changing it makes existing profiles unreadable |
+| `SYNC_TOKEN` | shared secret the nightly job uses for `/api/export` and `/api/results` |
+| `INVITE_CODE` | required to create a profile |
+
+```bash
+cd web && npx vercel deploy --prod
+```
+
+api: `GET/POST /api/profiles`, `POST /api/session`, `GET/PUT/DELETE /api/profile`, `GET /api/occupancy`, and (sync token only) `GET /api/export`, `POST /api/results`.
+
+### nightly booking (github actions)
+`.github/workflows/nightly_booking.yml` runs **every day at 05:01 UTC** (approx 12:01 AM EST). days with nothing scheduled are reported as `SKIPPED`.
 1.  go to **settings > secrets and variables > actions**.
-2.  add `BOOKING_USERNAME` and `BOOKING_PASSWORD`.
-3.  the workflow runs at **05:01 UTC** (approx 12:01 AM EST) on mondays, wednesdays, thursdays and fridays to secure the room 7 days out.
+2.  add the secret `BOOKING_SYNC_TOKEN` (same value as the vercel `SYNC_TOKEN`).
+3.  optional: set the variable `BOOKING_CONFIG_URL` if the scheduler moves (defaults to the vercel url above).
+
+the job fails only when a profile genuinely `FAILED`; a taken room is a notice, not an error.
