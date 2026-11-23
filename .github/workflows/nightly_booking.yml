@@ -2,15 +2,20 @@ name: Nightly Room Booking
 
 on:
   schedule:
-    # Runs at 05:01 UTC (approx 12:01 AM EST) on Mon, Wed, Thu, Fri.
-    # Bookings are made 7 days out, so the run day matches the booked day.
-    - cron: '01 05 * * 1,3,4,5'
+    # Every day at 05:01 UTC (12:01 AM EST / 1:01 AM EDT). Bookings are made
+    # 7 days out; which days and rooms come from the scheduler web app, and a
+    # day nobody scheduled is simply reported as SKIPPED.
+    - cron: '01 05 * * *'
   workflow_dispatch:
     # Allows manual trigger from GitHub UI
 
 jobs:
   book-room:
     runs-on: ubuntu-latest
+
+    env:
+      # Scheduler web app. Override with a repository variable if it moves.
+      BOOKING_CONFIG_URL: ${{ vars.BOOKING_CONFIG_URL || 'https://room-booking-scheduler.vercel.app' }}
 
     steps:
       - name: Checkout code
@@ -32,68 +37,63 @@ jobs:
 
       - name: Run Container & Trigger Booking
         env:
+          BOOKING_SYNC_TOKEN: ${{ secrets.BOOKING_SYNC_TOKEN }}
+          # Only used when BOOKING_SYNC_TOKEN is missing (single-profile fallback).
           BOOKING_USERNAME: ${{ secrets.BOOKING_USERNAME }}
           BOOKING_PASSWORD: ${{ secrets.BOOKING_PASSWORD }}
         run: |
-          if [ -z "$BOOKING_USERNAME" ] || [ -z "$BOOKING_PASSWORD" ]; then
-            echo "::error::BOOKING_USERNAME / BOOKING_PASSWORD secrets are not set on this repository."
+          if [ -n "$BOOKING_SYNC_TOKEN" ]; then
+            echo "Using schedules from $BOOKING_CONFIG_URL"
+            CONFIG_ARGS="-e BOOKING_CONFIG_URL=$BOOKING_CONFIG_URL -e BOOKING_SYNC_TOKEN"
+          elif [ -n "$BOOKING_USERNAME" ] && [ -n "$BOOKING_PASSWORD" ]; then
+            echo "::warning::BOOKING_SYNC_TOKEN is not set; falling back to the bundled default schedule."
+            CONFIG_ARGS="-e BOOKING_USERNAME -e BOOKING_PASSWORD"
+          else
+            echo "::error::Set the BOOKING_SYNC_TOKEN secret (or BOOKING_USERNAME / BOOKING_PASSWORD)."
             exit 1
           fi
 
-          docker run -d --name booking-service \
-            -p 8080:8080 \
-            -e BOOKING_USERNAME="$BOOKING_USERNAME" \
-            -e BOOKING_PASSWORD="$BOOKING_PASSWORD" \
-            roombooking
+          # shellcheck disable=SC2086
+          docker run -d --name booking-service -p 8080:8080 $CONFIG_ARGS roombooking
 
-          # curl prints 000 itself when it cannot connect, so `|| true` (not
-          # `|| echo 000`, which would concatenate into 000000) keeps the value
-          # readable while stopping `set -e` from aborting the step.
           echo "Waiting for service to start..."
           READY=""
           for i in $(seq 1 40); do
-            CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/v1/book || true)
-            case "$CODE" in
-              ""|000) ;;
-              *) READY="$CODE"; break ;;
-            esac
+            if curl -sf http://localhost:8080/api/v1/health > /dev/null; then READY=1; break; fi
             sleep 2
           done
-
           if [ -z "$READY" ]; then
-            echo "::error::Service never became reachable on port 8080."
+            echo "::error::Service never became healthy on port 8080."
             echo "----- container logs -----"
             docker logs booking-service
             exit 1
           fi
-          echo "Service is up (probe returned HTTP $READY)."
 
           echo "Triggering booking process..."
-          RESPONSE=$(curl -sS --max-time 900 -X POST http://localhost:8080/api/v1/book || true)
-          echo "Booking Response: $RESPONSE"
+          curl -sS --max-time 3000 -X POST http://localhost:8080/api/v1/book -o response.json || true
+          if ! jq -e .overall response.json > /dev/null 2>&1; then
+            echo "::error::Unrecognised response from booking service."
+            cat response.json 2>/dev/null || true
+            echo "----- container logs -----"
+            docker logs booking-service
+            exit 1
+          fi
 
-          # The service prefixes its reply with a status token. Only FAILED means
-          # something is broken; a room that is simply taken is a normal outcome.
-          case "$RESPONSE" in
-            SUCCESS:*)
-              echo "Booked successfully."
-              ;;
-            SKIPPED:*)
-              echo "Nothing scheduled for the target date."
-              ;;
-            UNAVAILABLE:*)
-              echo "::notice::Scheduled window already taken - no booking made."
-              ;;
-            FAILED:*)
-              echo "::error::$RESPONSE"
-              echo "----- container logs -----"
-              docker logs booking-service
-              exit 1
-              ;;
-            *)
-              echo "::error::Unrecognised response from booking service."
-              echo "----- container logs -----"
-              docker logs booking-service
-              exit 1
-              ;;
-          esac
+          jq -r '.results[].line' response.json
+          jq -r '.results[] | select(.status=="UNAVAILABLE") | "::notice::\(.line)"' response.json
+          jq -r '.results[] | select(.status=="FAILED") | "::error::\(.line)"' response.json
+
+          # Report outcomes back so each person sees them in the scheduler.
+          if [ -n "$BOOKING_SYNC_TOKEN" ]; then
+            jq '{targetDate, results: [.results[] | {profileId, status, summary, detail}]}' response.json \
+              | curl -sS --max-time 60 -X POST "$BOOKING_CONFIG_URL/api/results" \
+                  -H "Authorization: Bearer $BOOKING_SYNC_TOKEN" -H 'Content-Type: application/json' \
+                  --data @- || echo "::warning::Could not report results to the scheduler."
+            echo
+          fi
+
+          if [ "$(jq -r .overall response.json)" = "FAILED" ]; then
+            echo "----- container logs -----"
+            docker logs booking-service
+            exit 1
+          fi

@@ -1,0 +1,11 @@
+{
+  "name": "room-booking-scheduler",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Schedule editor for the Carleton room booker: profiles, rooms and times.",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@vercel/blob": "2.8.2"
+  }
+}
