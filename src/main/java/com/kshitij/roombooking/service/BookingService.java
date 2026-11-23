@@ -23,9 +23,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -59,7 +61,14 @@ public class BookingService {
     /** gid=0 returns every item at the location; we filter by itemId ourselves. */
     private static final String GID = "0";
 
-    private static final int LOOKAHEAD_DAYS = 7;
+    /** Bookings are made exactly one week ahead. */
+    static final int LOOKAHEAD_DAYS = 7;
+    /**
+     * "Today" is the library's date, not the server's. The container clock is
+     * UTC, which runs ahead of Ottawa every evening -- a run started then would
+     * otherwise book 8 days out.
+     */
+    static final ZoneId LIBRARY_ZONE = ZoneId.of("America/Toronto");
 
     private static final Pattern SPACE_ID = Pattern.compile("/space/(\\d+)");
 
@@ -81,7 +90,15 @@ public class BookingService {
      */
     /** The date tonight's run books for. */
     public static LocalDate targetDate() {
-        return LocalDate.now().plusDays(LOOKAHEAD_DAYS);
+        return targetDate(Clock.system(LIBRARY_ZONE));
+    }
+
+    static LocalDate targetDate(Clock clock) {
+        return libraryToday(clock).plusDays(LOOKAHEAD_DAYS);
+    }
+
+    static LocalDate libraryToday(Clock clock) {
+        return LocalDate.now(clock.withZone(LIBRARY_ZONE));
     }
 
     public List<ProfileResult> bookAll() {
@@ -229,7 +246,7 @@ public class BookingService {
                 logger.info("Room {} -> {} (itemId {})", room, roomUrl, itemId);
 
                 driver.get(roomUrl);
-                goToDate(driver, wait, LocalDate.now(), targetDate);
+                goToDate(driver, wait, libraryToday(Clock.systemUTC()), targetDate);
 
                 List<Slot> all = AvailabilityGrid.parse(fetchGrid(js, targetDate));
                 List<Slot> mine = AvailabilityGrid.allSlotsFor(all, itemId);
