@@ -87,9 +87,16 @@ cd web && npx vercel deploy --prod
 api: `GET/POST /api/profiles`, `POST /api/session`, `GET/PUT/DELETE /api/profile`, `GET /api/occupancy`, and (sync token only) `GET /api/export`, `POST /api/results`.
 
 ### nightly booking (github actions)
-`.github/workflows/nightly_booking.yml` runs **every day at 05:01 UTC** (approx 12:01 AM EST). days with nothing scheduled are reported as `SKIPPED`.
-1.  go to **settings > secrets and variables > actions**.
-2.  add the secret `BOOKING_SYNC_TOKEN` (same value as the vercel `SYNC_TOKEN`).
+`.github/workflows/nightly_booking.yml` books 7 days ahead (ottawa time) every night. days with nothing scheduled are reported as `SKIPPED`.
+
+**what starts it.** the scheduler's vercel cron (`web/vercel.json`, ~05:00 utc = midnight-1am ottawa) starts the workflow through github's api. github's own `schedule:` is kept only as a backup: github switches scheduled workflows off after 60 days without commits on public repos, and ran them 6-9 hours late before that. whichever trigger starts first claims the date (`/api/runs/claim`) and the other exits, and each profile skips dates it already booked, so a night is never booked twice.
+
+1.  go to **settings > secrets and variables > actions** and add the secret `BOOKING_SYNC_TOKEN` (same value as the vercel `SYNC_TOKEN`).
+2.  create a **fine-grained github token**: repository access *only this repo*, permission **actions: read and write**. add it in vercel as `GITHUB_DISPATCH_TOKEN`, then redeploy. (`CRON_SECRET` must also be set in vercel; vercel sends it with each cron call.)
 3.  optional: set the variable `BOOKING_CONFIG_URL` if the scheduler moves (defaults to the vercel url above).
+
+**manual runs / missed days.** *actions > nightly room booking > run workflow* takes an optional `date` (yyyy-mm-dd, within the next 7 days) to book that day instead of a week out.
+
+if the booker stops running, the scheduler shows a red banner (it reads `/api/status`).
 
 the job fails only when a profile genuinely `FAILED`; a taken room is a notice, not an error.

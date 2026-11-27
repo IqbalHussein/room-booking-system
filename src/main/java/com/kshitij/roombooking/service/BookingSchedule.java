@@ -12,13 +12,16 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.DayOfWeek;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Turns schedule JSON into {@link Profile}s.
@@ -56,11 +59,19 @@ public final class BookingSchedule {
                 String name = p.path("name").asText(id);
                 String username = p.path("username").asText(null);
                 String password = p.path("password").asText(null);
+                Set<LocalDate> booked = new HashSet<>();
+                for (JsonNode d : p.path("bookedDates")) {
+                    try {
+                        booked.add(LocalDate.parse(d.asText()));
+                    } catch (Exception ignored) {
+                        // A malformed date only weakens the duplicate guard; never fail the run over it.
+                    }
+                }
                 try {
-                    parsed.add(new Profile(id, name, username, password, parseSchedule(p.path("schedule"))));
+                    parsed.add(new Profile(id, name, username, password, parseSchedule(p.path("schedule")), null, booked));
                 } catch (BookingException e) {
                     // One bad schedule must not stop everyone else's bookings.
-                    parsed.add(new Profile(id, name, username, password, Map.of(), e.getMessage()));
+                    parsed.add(new Profile(id, name, username, password, Map.of(), e.getMessage(), booked));
                 }
             }
             return parsed;

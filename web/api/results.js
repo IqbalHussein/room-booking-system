@@ -1,6 +1,7 @@
 import { handler, method, send, body } from '../lib/http.js';
 import { loadProfile, saveProfile } from '../lib/store.js';
 import { isSyncRequest } from '../lib/auth.js';
+import { finishRun } from '../lib/runs.js';
 
 const KEEP = 14;
 const STATUSES = new Set(['SUCCESS', 'SKIPPED', 'UNAVAILABLE', 'FAILED']);
@@ -25,5 +26,6 @@ export default handler(async (req, res) => {
     await saveProfile(profile);
     stored++;
   }
+  await finishRun(b.targetDate, results.some((r) => r.status === 'FAILED'));
   return send(res, 200, { stored });
 });

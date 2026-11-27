@@ -347,6 +347,8 @@ main { max-width: 880px; margin: 0 auto; padding: 8px 16px 120px; }
 
 .section-title { display: flex; align-items: baseline; justify-content: space-between; margin: 6px 0 10px; gap: 4px 10px; flex-wrap: wrap; }
 
+.banner.bad { background: var(--bad-bg); border-color: var(--bad); }
+
 /* ---------- coming up ---------- */
 .agenda { margin-bottom: 26px; }
 

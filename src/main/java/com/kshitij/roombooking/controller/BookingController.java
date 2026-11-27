@@ -38,13 +38,13 @@ public class BookingController {
      */
     @PostMapping("/book")
     public ResponseEntity<Map<String, Object>> triggerBooking() {
-        String targetDate = BookingService.targetDate().toString();
-        List<ProfileResult> results = bookingService.bookAll();
+        BookingService.Run run = bookingService.bookAll();
+        List<ProfileResult> results = run.results();
         BookingResult.Status overall = overall(results);
 
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("overall", overall.name());
-        body.put("targetDate", targetDate);
+        body.put("targetDate", run.targetDate() == null ? null : run.targetDate().toString());
         body.put("results", results.stream().map(r -> {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("profileId", r.profileId());

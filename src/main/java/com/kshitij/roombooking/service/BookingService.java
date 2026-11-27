@@ -89,21 +89,60 @@ public class BookingService {
      * their next backup room.
      */
     /** The date tonight's run books for. */
-    public static LocalDate targetDate() {
-        return targetDate(Clock.system(LIBRARY_ZONE));
+    /**
+     * The date this run books for: {@code BOOKING_TARGET_DATE} when set (manual
+     * reruns and backfills), otherwise one week from today in library time.
+     */
+    public static LocalDate targetDate() throws BookingException {
+        return targetDate(Clock.system(LIBRARY_ZONE), System.getenv("BOOKING_TARGET_DATE"));
     }
 
     static LocalDate targetDate(Clock clock) {
         return libraryToday(clock).plusDays(LOOKAHEAD_DAYS);
     }
 
+    /** An explicit date must fall inside LibCal's booking window: today through a week out. */
+    static LocalDate targetDate(Clock clock, String override) throws BookingException {
+        if (override == null || override.isBlank()) {
+            return targetDate(clock);
+        }
+        LocalDate date;
+        try {
+            date = LocalDate.parse(override.trim());
+        } catch (Exception e) {
+            throw new BookingException(BookingStage.CONFIG,
+                    "BOOKING_TARGET_DATE '" + override + "' is not a YYYY-MM-DD date.");
+        }
+        LocalDate today = libraryToday(clock);
+        if (date.isBefore(today) || date.isAfter(today.plusDays(LOOKAHEAD_DAYS))) {
+            throw new BookingException(BookingStage.CONFIG,
+                    "BOOKING_TARGET_DATE " + date + " is outside the booking window.",
+                    "allowed: " + today + " to " + today.plusDays(LOOKAHEAD_DAYS));
+        }
+        return date;
+    }
+
     static LocalDate libraryToday(Clock clock) {
         return LocalDate.now(clock.withZone(LIBRARY_ZONE));
     }
 
-    public List<ProfileResult> bookAll() {
-        LocalDate targetDate = targetDate();
+    /** One run's outcome: the date it booked for (null if that couldn't be worked out) and per-profile results. */
+    public record Run(LocalDate targetDate, List<ProfileResult> results) {
+    }
 
+    public Run bookAll() {
+        LocalDate targetDate;
+        try {
+            targetDate = targetDate();
+        } catch (BookingException e) {
+            logger.error("[{}] {}{}", e.stage(), e.getMessage(), e.detail() == null ? "" : " | " + e.detail());
+            return new Run(null, List.of(new ProfileResult("-", "config",
+                    BookingResult.failed(e.stage(), e.getMessage(), e.detail()))));
+        }
+        return new Run(targetDate, bookAll(targetDate));
+    }
+
+    List<ProfileResult> bookAll(LocalDate targetDate) {
         List<Profile> profiles;
         try {
             profiles = scheduleSource.load();
@@ -133,6 +172,9 @@ public class BookingService {
             return BookingResult.failed(BookingStage.CONFIG, "This profile's schedule couldn't be read.", profile.problem());
         }
         Optional<DayPlan> scheduled = profile.planFor(targetDate.getDayOfWeek());
+        if (scheduled.isPresent() && profile.bookedDates().contains(targetDate)) {
+            return BookingResult.skipped("Already booked for " + targetDate + " on an earlier run.");
+        }
         if (scheduled.isEmpty()) {
             return BookingResult.skipped("Nothing scheduled for " + targetDate.getDayOfWeek() + " (" + targetDate + ").");
         }

@@ -94,6 +94,19 @@ class BookingScheduleTest {
     }
 
     @Test
+    void alreadyBookedDateIsSkippedWithoutTouchingTheBrowser() throws Exception {
+        String json = """
+                {"profiles":[{"id":"a1","name":"Iqbal","username":"u","password":"p",
+                  "bookedDates":["2026-12-02","not-a-date"],
+                  "schedule":{"WEDNESDAY":{"enabled":true,"blocks":[{"start":"11:30","end":"14:30","rooms":["324D"]}]}}}]}""";
+        Profile p = BookingSchedule.parseProfiles(json).get(0);
+        assertEquals(java.util.Set.of(java.time.LocalDate.of(2026, 12, 2)), p.bookedDates());
+        BookingResult r = new BookingService(null).bookFor(p, java.time.LocalDate.of(2026, 12, 2), new java.util.HashMap<>());
+        assertEquals(BookingResult.Status.SKIPPED, r.status());
+        assertTrue(r.summary().contains("Already booked"));
+    }
+
+    @Test
     void overlappingBlocksAreRejected() {
         assertThrows(IllegalArgumentException.class, () -> new DayPlan(List.of(
                 new TimeBlock(BookingWindow.of("09:00", "10:30"), List.of("507")),
