@@ -87,3 +87,28 @@ export async function listProfiles() {
 export function newId() {
   return crypto.randomBytes(8).toString('hex');
 }
+
+/* ---- run bookkeeping (no personal data: dates, timestamps, statuses) ---- */
+
+/** Returns { data, etag } or null. */
+export async function readJson(pathname) {
+  const res = await get(pathname, { access: ACCESS, useCache: false });
+  if (!res || res.statusCode !== 200 || !res.stream) return null;
+  return { data: JSON.parse(await streamToText(res.stream)), etag: String(res.blob.etag || '').replace(/^W\//, '') };
+}
+
+/**
+ * Writes JSON. `create: true` fails if the file exists; `ifMatch` fails if it
+ * changed since it was read. Both throw BlobPreconditionFailedError (or a
+ * "blob already exists" BlobError) so callers can treat them as "lost the race".
+ */
+export async function writeJson(pathname, data, { create = false, ifMatch } = {}) {
+  await put(pathname, JSON.stringify(data), {
+    access: ACCESS,
+    addRandomSuffix: false,
+    allowOverwrite: !create,
+    cacheControlMaxAge: 60,
+    contentType: 'application/json',
+    ...(ifMatch ? { ifMatch } : {}),
+  });
+}

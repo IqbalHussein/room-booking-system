@@ -27,6 +27,8 @@ export function toExport(p) {
     username: p.credentials?.username || '',
     password: p.credentials?.password || '',
     schedule,
+    // Dates an earlier run already booked, so a rerun never books a second room.
+    bookedDates: [...new Set((p.lastResults || []).filter((r) => r.status === 'SUCCESS' && r.targetDate).map((r) => r.targetDate))],
   };
 }
 

@@ -237,6 +237,30 @@ async function enterEditor(token, profile) {
   storage((s) => s.setItem('srb.session', JSON.stringify({ token, id: profile.id })));
   go('editor');
   refreshClaims();
+  refreshStatus();
+}
+
+/** Whether the nightly booker is actually running: drives a warning banner. */
+async function refreshStatus() {
+  try {
+    state.status = await api('/api/status', { auth: false });
+    if (state.view === 'editor') renderEditor();
+  } catch {
+    // Not critical; the banner just won't show.
+  }
+}
+
+function healthBanner() {
+  const s = state.status;
+  if (!s) return '';
+  const fmt = (iso) => new Date(iso).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  if (s.lastDispatch && !s.lastDispatch.ok) {
+    return `<div class="banner bad"><span><strong>The nightly booker couldn't be started</strong> (${fmt(s.lastDispatch.at)}). ${esc(s.lastDispatch.error || '')}</span></div>`;
+  }
+  if (s.lastRun && Date.now() - Date.parse(s.lastRun.at) > 30 * 3600_000) {
+    return `<div class="banner bad"><span><strong>The booker hasn't run since ${fmt(s.lastRun.at)}.</strong> New bookings aren't being made.</span></div>`;
+  }
+  return '';
 }
 
 async function refreshClaims() {
@@ -587,6 +611,7 @@ function renderEditor() {
       <div class="grow"><h1>${esc(p.name)}</h1></div>
     </section>
 
+    ${healthBanner()}
     ${p.paused ? `<div class="banner"><span><strong>Bookings are paused.</strong></span>
       <button class="btn small primary" data-act="unpause">Resume</button></div>` : ''}
     ${!p.hasPassword ? `<div class="banner"><span><strong>No Carleton login saved.</strong> Add it under Settings.</span></div>` : ''}

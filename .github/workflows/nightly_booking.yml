@@ -1,13 +1,22 @@
 name: Nightly Room Booking
 
 on:
+  # Primary trigger: the scheduler's Vercel cron starts this via workflow_dispatch
+  # around 05:00 UTC (midnight-1am Ottawa). GitHub's own schedule below is only a
+  # backup: it was switched off after 60 days without commits and, before that,
+  # ran 6-9 hours late. Whichever starts first claims the date; the other exits.
   schedule:
-    # Every day at 05:01 UTC (12:01 AM EST / 1:01 AM EDT). Bookings are made
-    # 7 days out; which days and rooms come from the scheduler web app, and a
-    # day nobody scheduled is simply reported as SKIPPED.
     - cron: '01 05 * * *'
   workflow_dispatch:
-    # Allows manual trigger from GitHub UI
+    inputs:
+      date:
+        description: 'Book for this date (YYYY-MM-DD, within the next 7 days). Empty = one week from today.'
+        required: false
+        default: ''
+      source:
+        description: 'What started this run (set by the scheduler).'
+        required: false
+        default: 'manual'
 
 jobs:
   book-room:
@@ -21,7 +30,33 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Work out the target date and claim it
+        id: claim
+        env:
+          BOOKING_SYNC_TOKEN: ${{ secrets.BOOKING_SYNC_TOKEN }}
+          INPUT_DATE: ${{ github.event.inputs.date }}
+          SOURCE: ${{ github.event.inputs.source || github.event_name }}
+        run: |
+          # One week from today in Ottawa time, unless a date was given.
+          if [ -n "$INPUT_DATE" ]; then TARGET="$INPUT_DATE"; FORCE=true; else TARGET=$(TZ=America/Toronto date -d '+7 days' +%F); FORCE=false; fi
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+          echo "Target date: $TARGET (started by: $SOURCE)"
+
+          if [ -z "$BOOKING_SYNC_TOKEN" ]; then echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          CODE=$(curl -sS -o claim.json -w '%{http_code}' --max-time 30 -X POST "$BOOKING_CONFIG_URL/api/runs/claim" \
+            -H "Authorization: Bearer $BOOKING_SYNC_TOKEN" -H 'Content-Type: application/json' \
+            -d "{\"targetDate\":\"$TARGET\",\"force\":$FORCE,\"source\":\"$SOURCE\"}" || true)
+          if [ "$CODE" = "409" ]; then
+            echo "::notice::Skipping: $(jq -r .reason claim.json) ($TARGET)"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            # Any other failure to reach the ledger: book anyway (per-profile guard still prevents double bookings).
+            [ "$CODE" = "200" ] || echo "::warning::Could not claim $TARGET (HTTP $CODE); continuing."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up JDK 17
+        if: steps.claim.outputs.skip != 'true'
         uses: actions/setup-java@v4
         with:
           java-version: '17'
@@ -30,13 +65,17 @@ jobs:
 
       # Catches slot-matching regressions before a browser is ever launched.
       - name: Run unit tests
+        if: steps.claim.outputs.skip != 'true'
         run: mvn -B test
 
       - name: Build Docker Image
+        if: steps.claim.outputs.skip != 'true'
         run: docker build -t roombooking .
 
       - name: Run Container & Trigger Booking
+        if: steps.claim.outputs.skip != 'true'
         env:
+          BOOKING_TARGET_DATE: ${{ steps.claim.outputs.target }}
           BOOKING_SYNC_TOKEN: ${{ secrets.BOOKING_SYNC_TOKEN }}
           # Only used when BOOKING_SYNC_TOKEN is missing (single-profile fallback).
           BOOKING_USERNAME: ${{ secrets.BOOKING_USERNAME }}
@@ -54,7 +93,7 @@ jobs:
           fi
 
           # shellcheck disable=SC2086
-          docker run -d --name booking-service -p 8080:8080 $CONFIG_ARGS roombooking
+          docker run -d --name booking-service -p 8080:8080 -e BOOKING_TARGET_DATE $CONFIG_ARGS roombooking
 
           echo "Waiting for service to start..."
           READY=""
