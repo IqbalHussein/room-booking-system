@@ -2,7 +2,7 @@ import { handler, method, send, body } from '../lib/http.js';
 import { loadProfile, saveProfile, deleteProfile, listProfiles } from '../lib/store.js';
 import { readSession, hashPasscode, isPasscode, checkPasscode, issueSession } from '../lib/auth.js';
 import { validateSchedule, claimsOf, findConflicts } from '../lib/schedule.js';
-import { cleanName, toClient } from '../lib/profiles.js';
+import { cleanName, cleanUsername, toClient } from '../lib/profiles.js';
 
 export default handler(async (req, res) => {
   if (!method(req, res, ['GET', 'PUT', 'DELETE'])) return;
@@ -38,7 +38,7 @@ export default handler(async (req, res) => {
   }
   if (b.paused !== undefined) profile.paused = Boolean(b.paused);
   if (b.username !== undefined || b.password !== undefined) {
-    const username = String(b.username ?? profile.credentials?.username ?? '').trim();
+    const username = cleanUsername(b.username ?? profile.credentials?.username);
     const password = b.password ? String(b.password) : profile.credentials?.password || '';
     if (!username || !password) return send(res, 400, { error: 'Enter both your Carleton username and password.' });
     profile.credentials = { username, password };
