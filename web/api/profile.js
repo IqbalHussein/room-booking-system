@@ -32,7 +32,7 @@ export default handler(async (req, res) => {
     profile.name = name;
   }
   if (b.schedule !== undefined) {
-    const { schedule, error } = validateSchedule(b.schedule);
+    const { schedule, error } = validateSchedule(b.schedule, profile.schedule);
     if (error) return send(res, 400, { error });
     profile.schedule = schedule;
   }

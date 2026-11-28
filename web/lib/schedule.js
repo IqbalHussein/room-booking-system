@@ -28,7 +28,14 @@ export function blocksOf(day) {
 }
 
 /** Returns { schedule } normalised, or { error }. */
-export function validateSchedule(input) {
+/**
+ * `previous` is the schedule already saved: a room that's already there but
+ * isn't bookable is kept (the booker substitutes the closest real room until
+ * it's fixed), so it never blocks saving other changes. New ones are rejected.
+ */
+export function validateSchedule(input, previous = null) {
+  const keep = new Set(Object.values(previous || {}).flatMap((d) => blocksOf(d).flatMap((b) => b.rooms || []))
+    .map((r) => String(r).trim().toUpperCase()));
   if (!input || typeof input !== 'object') return { error: 'Schedule is missing.' };
   const out = {};
   for (const day of DAYS) {
@@ -49,8 +56,8 @@ export function validateSchedule(input) {
         const typed = String(r).trim();
         if (!typed) continue;
         const found = findRoom(typed);
-        if (!found) return { error: `${name}: ${typed} isn't a bookable room. Pick one from the list.` };
-        const room = found.id;
+        if (!found && !keep.has(typed.toUpperCase())) return { error: `${name}: ${typed} isn't a bookable room. Pick one from the list.` };
+        const room = found ? found.id : typed.toUpperCase();
         if (seen.has(room.toUpperCase())) continue;
         seen.add(room.toUpperCase());
         rooms.push(room);
