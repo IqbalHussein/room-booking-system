@@ -548,21 +548,46 @@ public class BookingService {
         // Submitting doesn't mean it worked. Wait until we're either back on
         // LibCal or the sign-in page shows an error, instead of failing 20s
         // later at "Continue" with no hint that the login was the problem.
+        // The page is navigating while we poll, so each check tolerates
+        // elements vanishing mid-read (StaleElement etc.) and simply retries.
+        String outcome;
         try {
-            new WebDriverWait(driver, Duration.ofSeconds(25)).until(d ->
-                    !d.findElements(By.id("errorText")).stream().filter(el -> !el.getText().isBlank()).toList().isEmpty()
-                            || String.valueOf(d.getCurrentUrl()).contains("libcal.com"));
-        } catch (Exception timeout) {
+            outcome = new WebDriverWait(driver, Duration.ofSeconds(25))
+                    .ignoring(org.openqa.selenium.WebDriverException.class)
+                    .until(d -> {
+                        if (onLibCal(d.getCurrentUrl())) {
+                            return "ok";
+                        }
+                        for (WebElement el : d.findElements(By.id("errorText"))) {
+                            String text = el.getText().trim();
+                            if (!text.isEmpty()) {
+                                return text;
+                            }
+                        }
+                        return null;
+                    });
+        } catch (org.openqa.selenium.TimeoutException timeout) {
             throw new BookingException(BookingStage.LOGIN,
                     "Still on the Carleton sign-in pages 25s after submitting the login.",
                     "Usually an extra step such as a 2-factor prompt, or a password-change page. " + pageSummary(driver));
         }
-        List<WebElement> errors = driver.findElements(By.id("errorText"));
-        String error = errors.isEmpty() ? "" : errors.get(0).getText().trim();
-        if (!error.isEmpty()) {
+        if (!"ok".equals(outcome)) {
             throw new BookingException(BookingStage.LOGIN,
-                    "Carleton rejected the sign-in: " + error,
+                    "Carleton rejected the sign-in: " + outcome,
                     "Check the username and password saved under Settings > Carleton login in the scheduler.");
+        }
+    }
+
+    /**
+     * True when the browser's host is LibCal itself. Checked on the host, not
+     * the whole URL: the sign-in page's own URL carries a LibCal return link.
+     */
+    static boolean onLibCal(String url) {
+        try {
+            String host = java.net.URI.create(String.valueOf(url)).getHost();
+            return host != null && (host.equals("libcal.com") || host.endsWith(".libcal.com"));
+        } catch (Exception e) {
+            return false;
         }
     }
 
