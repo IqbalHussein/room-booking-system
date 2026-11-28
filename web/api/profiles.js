@@ -2,7 +2,7 @@ import { handler, method, send, body } from '../lib/http.js';
 import { listProfiles, saveProfile, newId } from '../lib/store.js';
 import { hashPasscode, isPasscode, safeEqual, issueSession } from '../lib/auth.js';
 import { emptySchedule } from '../lib/schedule.js';
-import { cleanName, toClient } from '../lib/profiles.js';
+import { cleanName, cleanUsername, toClient } from '../lib/profiles.js';
 
 const MAX_PROFILES = 25;
 
@@ -24,7 +24,7 @@ export default handler(async (req, res) => {
     return send(res, 409, { error: `There's already a profile called ${name}.` });
   }
   if (!isPasscode(b.passcode)) return send(res, 400, { error: 'The passcode must be exactly 4 digits.' });
-  const username = String(b.username || '').trim();
+  const username = cleanUsername(b.username);
   const password = String(b.password || '');
   if (!username || !password) return send(res, 400, { error: 'Enter your Carleton username and password.' });
   if (profiles.length >= MAX_PROFILES) return send(res, 400, { error: 'This scheduler is full.' });

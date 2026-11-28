@@ -414,7 +414,8 @@ function renderCreate() {
           <input class="input pin-input" id="cPin" name="passcode" required inputmode="numeric" pattern="\\d{4}" maxlength="4" autocomplete="new-password">
 </div>
         <div class="field"><label for="cUser">Carleton username</label>
-          <input class="input" id="cUser" name="username" required autocapitalize="off" spellcheck="false" autocomplete="username"></div>
+          <input class="input" id="cUser" name="username" required autocapitalize="off" spellcheck="false" autocomplete="username" placeholder="e.g. jsmith" data-username>
+          <span class="hint">Just the username, without @cmail.carleton.ca</span></div>
         <div class="field"><label for="cPass">Carleton password</label>
           <input class="input" id="cPass" name="password" type="password" required autocomplete="current-password"></div>
         <p class="note"><span aria-hidden="true">🔒</span><span>Stored encrypted. Only used to make your bookings.</span></p>
@@ -649,7 +650,8 @@ function renderEditor() {
           <span class="small">${esc(r.summary || '')}</span>${r.detail ? `<span class="small muted">${esc(r.detail)}</span>` : ''}</div>`).join('')}
       </div></details>` : ''}
       <details class="card"><summary>Carleton login</summary><form class="inner" id="credForm" autocomplete="off">
-        <div class="field"><label for="sUser">Username</label><input class="input" id="sUser" name="username" value="${esc(p.username)}" required autocapitalize="off" spellcheck="false"></div>
+        <div class="field"><label for="sUser">Username</label><input class="input" id="sUser" name="username" value="${esc(p.username)}" required autocapitalize="off" spellcheck="false" data-username>
+          <span class="hint">Just the username, without @cmail.carleton.ca</span></div>
         <div class="field"><label for="sPass">Password</label><input class="input" id="sPass" name="password" type="password" placeholder="${p.hasPassword ? 'Saved. Leave blank to keep' : ''}" autocomplete="new-password"></div>
         <div><button class="btn primary" type="submit">Update login</button></div></form></details>
       <details class="card"><summary>Passcode</summary><form class="inner" id="pinForm" autocomplete="off">
@@ -881,6 +883,16 @@ document.addEventListener('submit', async (e) => {
   if (f.id === 'nameForm') {
     const ok = await updateProfile({ name: new FormData(f).get('name') }, 'Renamed');
     if (ok) state.selected.name = state.profile.name;
+  }
+});
+
+// Carleton's sign-in rejects the email form; strip the domain as people type it.
+document.addEventListener('input', (e) => {
+  if (!e.target.matches?.('[data-username]')) return;
+  const cleaned = e.target.value.replace(/@(cmail\.)?carleton\.ca$/i, '');
+  if (cleaned !== e.target.value) {
+    e.target.value = cleaned;
+    toast('Removed @cmail.carleton.ca. Carleton sign-in only needs the username.');
   }
 });
 

@@ -5,7 +5,7 @@ export function toClient(p) {
   return {
     id: p.id,
     name: p.name,
-    username: p.credentials?.username || '',
+    username: cleanUsername(p.credentials?.username),
     hasPassword: Boolean(p.credentials?.password),
     paused: Boolean(p.paused),
     schedule: upgradeSchedule(p.schedule),
@@ -24,12 +24,20 @@ export function toExport(p) {
   return {
     id: p.id,
     name: p.name,
-    username: p.credentials?.username || '',
+    username: cleanUsername(p.credentials?.username),
     password: p.credentials?.password || '',
     schedule,
     // Dates an earlier run already booked, so a rerun never books a second room.
     bookedDates: [...new Set((p.lastResults || []).filter((r) => r.status === 'SUCCESS' && r.targetDate).map((r) => r.targetDate))],
   };
+}
+
+/**
+ * Carleton's sign-in page wants the bare username ("jsmith"), not the email
+ * address ("jsmith@cmail.carleton.ca"); with the email it rejects the login.
+ */
+export function cleanUsername(username) {
+  return String(username ?? '').trim().replace(/@(cmail\.)?carleton\.ca$/i, '');
 }
 
 export function cleanName(name) {
