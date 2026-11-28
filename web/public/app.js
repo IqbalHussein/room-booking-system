@@ -1,6 +1,6 @@
 // Study Room Booker — schedule editor. Plain JS, no build step.
 
-import { ROOMS, findRoom, closestRoom } from '/rooms.js';
+import { ROOMS, findRoom, closestRoom, resolveRooms } from '/rooms.js';
 
 const DAYS = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
 const DAY_LABEL = Object.fromEntries(DAYS.map((d) => [d, d[0] + d.slice(1).toLowerCase()]));
@@ -581,6 +581,10 @@ function dayCard(day, conflicts, problems) {
             <button class="btn small" type="submit">Add</button>
           </form>` : ''}
         </div>
+        ${(() => {
+          const { auto } = resolveRooms(b.rooms, state.profile.autoBackups !== false);
+          return auto.length ? `<p class="auto-backups">Then tries ${auto.map(esc).join(', ')} if those are taken <span class="muted">(automatic)</span></p>` : '';
+        })()}
         ${b.rooms.filter((r) => !findRoom(r)).map((r) => `<p class="warn">${esc(r)} isn't a bookable room, so ${esc(standInFor(b, r) || 'the closest room')} is booked instead. Remove ${esc(r)} to choose yourself.</p>`).join('')}
         ${clashes.length ? `<ul class="warn">${clashSummary(clashes)}</ul>` : ''}
       </div>`;
@@ -676,6 +680,7 @@ function renderEditor() {
       <details class="card"><summary>Profile</summary><div class="inner">
         <form class="row" id="nameForm"><input class="input" name="name" value="${esc(p.name)}" maxlength="24" style="max-width:240px" aria-label="Profile name"><button class="btn" type="submit">Rename</button></form>
         <div class="row">
+          <button class="btn" data-act="${p.autoBackups === false ? 'auto-on' : 'auto-off'}">${p.autoBackups === false ? 'Turn on automatic backup rooms' : 'Turn off automatic backup rooms'}</button>
           <button class="btn" data-act="${p.paused ? 'unpause' : 'pause'}">${p.paused ? 'Resume bookings' : 'Pause all bookings'}</button>
           <button class="btn danger" data-act="delete">Delete profile</button>
         </div></div></details>
@@ -816,6 +821,8 @@ document.addEventListener('click', async (e) => {
   }
   if (act === 'discard') { state.draft = clone(state.profile.schedule); renderEditor(); }
   if (act === 'save') save();
+  if (act === 'auto-on') updateProfile({ autoBackups: true }, 'Automatic backup rooms on');
+  if (act === 'auto-off') updateProfile({ autoBackups: false }, 'Automatic backup rooms off');
   if (act === 'pause') updateProfile({ paused: true }, 'Bookings paused');
   if (act === 'unpause') updateProfile({ paused: false }, 'Bookings resumed');
   if (act === 'delete') {

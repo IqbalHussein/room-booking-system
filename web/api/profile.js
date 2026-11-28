@@ -37,6 +37,7 @@ export default handler(async (req, res) => {
     profile.schedule = schedule;
   }
   if (b.paused !== undefined) profile.paused = Boolean(b.paused);
+  if (b.autoBackups !== undefined) profile.autoBackups = Boolean(b.autoBackups);
   if (b.username !== undefined || b.password !== undefined) {
     const username = cleanUsername(b.username ?? profile.credentials?.username);
     const password = b.password ? String(b.password) : profile.credentials?.password || '';
