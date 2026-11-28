@@ -1,5 +1,5 @@
 import { DAYS, blocksOf, upgradeSchedule } from './schedule.js';
-import { findRoom, closestRoom } from '../public/rooms.js';
+import { resolveRooms } from '../public/rooms.js';
 
 /** What a signed-in person sees of their own profile. The password never leaves the server. */
 export function toClient(p) {
@@ -9,6 +9,7 @@ export function toClient(p) {
     username: cleanUsername(p.credentials?.username),
     hasPassword: Boolean(p.credentials?.password),
     paused: Boolean(p.paused),
+    autoBackups: p.autoBackups !== false,
     schedule: upgradeSchedule(p.schedule),
     lastResults: p.lastResults || [],
   };
@@ -19,7 +20,7 @@ export function toExport(p) {
   const schedule = {};
   for (const day of DAYS) {
     const d = p.schedule?.[day];
-    const blocks = d?.enabled ? blocksOf(d).map(withRealRooms).filter((b) => b.rooms.length) : [];
+    const blocks = d?.enabled ? blocksOf(d).map((b) => withRealRooms(b, p.autoBackups !== false)).filter((b) => b.rooms.length) : [];
     if (blocks.length) schedule[day] = { blocks };
   }
   return {
@@ -42,18 +43,12 @@ export function cleanUsername(username) {
 }
 
 /**
- * A saved room that isn't bookable (e.g. "416") is swapped for the closest real
- * one on the same floor ("420") until the profile is fixed, rather than failing
- * the booking. Valid rooms keep their order; duplicates are dropped.
+ * The rooms the booker actually tries for a block: saved rooms that aren't
+ * bookable swapped for the closest real one, then (unless turned off) the
+ * closest rooms to the first choice as automatic backups. See resolveRooms.
  */
-export function withRealRooms(block) {
-  const rooms = [];
-  const listed = (block.rooms || []).map((r) => findRoom(r)?.id).filter(Boolean);
-  for (const r of block.rooms || []) {
-    const id = findRoom(r)?.id || closestRoom(r, [...listed, ...rooms]);
-    if (id && !rooms.includes(id)) rooms.push(id);
-  }
-  return { ...block, rooms };
+export function withRealRooms(block, autoBackups = true) {
+  return { ...block, rooms: resolveRooms(block.rooms || [], autoBackups).rooms };
 }
 
 export function cleanName(name) {

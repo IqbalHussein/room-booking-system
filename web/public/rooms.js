@@ -40,3 +40,43 @@ export function closestRoom(input, exclude = []) {
     .map((r) => ({ id: r.id, d: Math.abs(num(r.id) - target) * 100 + Math.abs(suffix(r.id) - suffix(typed)), n: num(r.id) }))
     .sort((a, b) => a.d - b.d || a.n - b.n)[0]?.id || null;
 }
+
+/** Blocks are topped up to this many rooms when automatic backups are on. */
+export const AUTO_BACKUP_TARGET = 4;
+
+function distance(a, b) {
+  const num = (id) => parseInt(id, 10);
+  const suffix = (id) => (id.match(/[A-Z]$/)?.[0] || '@').charCodeAt(0);
+  return Math.abs(num(a) - num(b)) * 100 + Math.abs(suffix(a) - suffix(b));
+}
+
+/** Real rooms nearest to `anchor` (same floor first), excluding `exclude`. */
+export function roomsNear(anchor, exclude = [], count = 3) {
+  const a = String(anchor ?? '').trim().toUpperCase();
+  if (Number.isNaN(parseInt(a, 10))) return [];
+  const skip = new Set(exclude.map((r) => String(r).toUpperCase()));
+  return ROOMS.filter((r) => !skip.has(r.id) && r.id !== a)
+    .map((r) => ({ id: r.id, floor: r.id[0] === a[0] ? 0 : 1, d: distance(r.id, a), n: parseInt(r.id, 10) }))
+    .sort((x, y) => x.floor - y.floor || x.d - y.d || x.n - y.n)
+    .slice(0, count)
+    .map((r) => r.id);
+}
+
+/**
+ * The rooms a block is actually tried with, in order: the person's own rooms
+ * (any that don't exist swapped for the closest real one), then, if
+ * `autoBackups`, the closest rooms to their first choice up to
+ * AUTO_BACKUP_TARGET. Returns { rooms, auto } where `auto` are the added ones.
+ */
+export function resolveRooms(list = [], autoBackups = true) {
+  const listed = list.map((r) => findRoom(r)?.id).filter(Boolean);
+  const rooms = [];
+  for (const r of list) {
+    const id = findRoom(r)?.id || closestRoom(r, [...listed, ...rooms]);
+    if (id && !rooms.includes(id)) rooms.push(id);
+  }
+  const auto = autoBackups && rooms.length && rooms.length < AUTO_BACKUP_TARGET
+    ? roomsNear(rooms[0], rooms, AUTO_BACKUP_TARGET - rooms.length)
+    : [];
+  return { rooms: [...rooms, ...auto], auto };
+}

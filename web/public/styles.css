@@ -535,6 +535,8 @@ main { max-width: 880px; margin: 0 auto; padding: 8px 16px 120px; }
 
 .chip-btn[disabled] { opacity: 0.25; cursor: default; background: transparent; }
 
+.auto-backups { font-size: 13px; color: var(--ink-2); margin: -2px 0 0; }
+
 .add-room { display: inline-flex; gap: 6px; align-items: center; }
 
 .add-room input { width: 170px; min-height: 36px; padding: 5px 14px; border-radius: 999px; }
