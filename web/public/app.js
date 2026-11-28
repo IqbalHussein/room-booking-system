@@ -1,5 +1,7 @@
 // Study Room Booker — schedule editor. Plain JS, no build step.
 
+import { ROOMS, findRoom } from '/rooms.js';
+
 const DAYS = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
 const DAY_LABEL = Object.fromEntries(DAYS.map((d) => [d, d[0] + d.slice(1).toLowerCase()]));
 const DAY_START = 7 * 60; // grid and dropdowns run 7:00am–11:00pm
@@ -155,6 +157,14 @@ function modal({ title, html, confirm = 'OK', cancel = 'Cancel', danger = false 
   });
 }
 
+/** A hint listing real rooms on the same floor as what was typed. */
+function nearbyRooms(typed) {
+  const floor = String(typed).trim()[0];
+  const same = ROOMS.filter((r) => r.id[0] === floor).map((r) => r.id);
+  if (!same.length) return 'Pick one from the list.';
+  return `On that floor: ${same.length > 6 ? `${same[0]}–${same[same.length - 1]}` : same.join(', ')}.`;
+}
+
 /* ---------------- rules (mirror lib/schedule.js) ---------------- */
 
 /** Same-room, overlapping-time clashes with other profiles. */
@@ -186,6 +196,7 @@ function problemsFor(schedule) {
     const multi = d.blocks.length > 1;
     d.blocks.forEach((b, i) => {
       if (!b.rooms.length) list.push(multi ? `Block ${i + 1} needs a room.` : 'Add a room.');
+      for (const r of b.rooms) if (!findRoom(r)) list.push(`${r} isn't a bookable room. Remove it and pick one from the list.`);
     });
     const sorted = [...d.blocks].sort((a, b) => toMin(a.start) - toMin(b.start));
     for (let i = 1; i < sorted.length; i++) {
@@ -502,7 +513,8 @@ function endOptions(d, i) {
 function chipsHtml(day, bi, b, clashRooms) {
   return b.rooms.map((room, i) => {
     const clash = clashRooms.has(room.toUpperCase());
-    return `<span class="chip ${clash ? 'conflict' : ''}">
+    const unknown = !findRoom(room);
+    return `<span class="chip ${unknown ? 'unknown' : clash ? 'conflict' : ''}" ${unknown ? 'title="Not a bookable room"' : ''}>
       <span class="rank" aria-label="choice ${i + 1}">${i + 1}</span>
       <span class="room">${esc(room)}${clash ? ' <span aria-label="wanted by someone else">⚠</span>' : ''}</span>
       <button class="chip-btn" data-act="up" data-day="${day}" data-b="${bi}" data-i="${i}" ${i === 0 ? 'disabled' : ''} aria-label="Try ${esc(room)} earlier">↑</button>
@@ -551,7 +563,7 @@ function dayCard(day, conflicts, problems) {
         <div class="chips">
           ${chipsHtml(day, bi, b, clashRooms)}
           ${b.rooms.length < MAX_ROOMS ? `<form class="add-room" data-add="${day}" data-b="${bi}">
-            <input class="input" name="room" placeholder="${b.rooms.length ? '+ backup room' : '+ add room, e.g. 507'}" maxlength="24" autocomplete="off"
+            <input class="input" name="room" list="room-list" placeholder="${b.rooms.length ? '+ backup room' : '+ add room, e.g. 507'}" maxlength="24" autocomplete="off"
               aria-label="Add a room to ${DAY_LABEL[day]} block ${bi + 1}" data-focus="add-${day}-${bi}">
             <button class="btn small" type="submit">Add</button>
           </form>` : ''}
@@ -653,6 +665,8 @@ function renderEditor() {
           <button class="btn danger" data-act="delete">Delete profile</button>
         </div></div></details>
     </section>
+
+    <datalist id="room-list">${ROOMS.map((r) => `<option value="${r.id}">Capacity ${r.capacity}${r.note ? ` · ${r.note}` : ''}</option>`).join('')}</datalist>
 
     <div class="savebar ${dirty() ? 'show' : ''}" role="region" aria-label="Unsaved changes">
       <span>${problemCount ? `Fix ${problemCount} ${problemCount === 1 ? 'issue' : 'issues'} to save` : conflicts.length ? '⚠ Unsaved, with room overlaps' : 'Unsaved changes'}</span>
@@ -843,12 +857,14 @@ document.addEventListener('submit', async (e) => {
     const day = f.dataset.add;
     const bi = Number(f.dataset.b);
     const input = f.querySelector('input');
-    const room = input.value.trim().replace(/\s+/g, ' ');
-    if (!room) return;
-    if (!/^[A-Za-z0-9][A-Za-z0-9 .\-]{0,23}$/.test(room)) return toast('Use just the room number, e.g. 507 or 324B', true);
+    const typed = input.value.trim();
+    if (!typed) return;
+    const found = findRoom(typed);
+    if (!found) return toast(`${typed} isn't a bookable room. ${nearbyRooms(typed)}`, true);
+    const room = found.id;
     const list = state.draft[day].blocks[bi].rooms;
-    if (list.some((r) => r.toUpperCase() === room.toUpperCase())) return toast(`${room} is already on this list`, true);
-    mutate((s) => s[day].blocks[bi].rooms.push(room.toUpperCase()));
+    if (list.some((r) => r.toUpperCase() === room)) return toast(`${room} is already on this list`, true);
+    mutate((s) => s[day].blocks[bi].rooms.push(room));
     app.querySelector(`[data-focus="add-${day}-${bi}"]`)?.focus();
     return;
   }

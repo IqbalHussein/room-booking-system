@@ -1,0 +1,20 @@
+// Bookable study rooms, as LibCal lists them (floors 2-5). Taken from the room
+// list the booker reads on carletonu.libcal.com; update this if LibCal adds or
+// removes rooms (a booking run that can't find a room logs the full list it saw).
+export const ROOMS = [
+  ['234A', 5], ['234B', 5], ['234C', 4], ['234D', 4],
+  ['324A', 6], ['324B', 6], ['324C', 6], ['324D', 6],
+  ['420', 6], ['421', 6], ['422', 6], ['423', 6], ['424', 6],
+  ['462', 6], ['463', 6], ['464', 8], ['465', 6], ['466', 6], ['467', 6, 'VR'], ['468', 8], ['469', 6, 'VR'],
+  ['470', 6], ['471', 6], ['472', 4], ['473', 5],
+  ['504', 6], ['505', 6], ['506', 6], ['507', 6], ['508', 6],
+  ['561', 4], ['562', 4], ['563', 4], ['564', 4], ['565', 4], ['566', 4], ['567', 4], ['568', 4], ['569', 4],
+  ['570', 6], ['571', 6], ['572', 6], ['573', 6], ['574', 6],
+].map(([id, capacity, note]) => ({ id, capacity, note: note || '' }));
+
+const BY_ID = new Map(ROOMS.map((r) => [r.id, r]));
+
+/** The canonical id for what someone typed ("324d " -> "324D"), or null if it isn't a bookable room. */
+export function findRoom(input) {
+  return BY_ID.get(String(input ?? '').trim().toUpperCase()) || null;
+}

@@ -513,6 +513,10 @@ main { max-width: 880px; margin: 0 auto; padding: 8px 16px 120px; }
 
 .chip.conflict .rank { background: var(--warn); color: var(--surface); }
 
+.chip.unknown { border-color: var(--bad); background: var(--bad-bg); color: var(--bad); text-decoration: line-through; }
+
+.chip.unknown .rank { background: var(--bad); color: var(--surface); }
+
 .chip-btn {
   border: 0;
   background: transparent;
