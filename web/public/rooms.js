@@ -18,3 +18,25 @@ const BY_ID = new Map(ROOMS.map((r) => [r.id, r]));
 export function findRoom(input) {
   return BY_ID.get(String(input ?? '').trim().toUpperCase()) || null;
 }
+
+/**
+ * The real room closest to one that doesn't exist, used as a stand-in until the
+ * profile is fixed: same floor first, then nearest room number (ties go to the
+ * lower number), skipping rooms in `exclude`. "416" -> "420", "324E" -> "324D".
+ */
+export function closestRoom(input, exclude = []) {
+  const typed = String(input ?? '').trim().toUpperCase();
+  if (!typed || findRoom(typed)) return findRoom(typed)?.id || null;
+  const skip = new Set(exclude.map((r) => String(r).trim().toUpperCase()));
+  const num = (id) => parseInt(id, 10);
+  const suffix = (id) => (id.match(/[A-Z]$/)?.[0] || '@').charCodeAt(0);
+  const target = num(typed);
+  if (Number.isNaN(target)) return null;
+  const floor = typed[0];
+  const pool = ROOMS.filter((r) => !skip.has(r.id));
+  const sameFloor = pool.filter((r) => r.id[0] === floor);
+  const candidates = sameFloor.length ? sameFloor : pool;
+  return candidates
+    .map((r) => ({ id: r.id, d: Math.abs(num(r.id) - target) * 100 + Math.abs(suffix(r.id) - suffix(typed)), n: num(r.id) }))
+    .sort((a, b) => a.d - b.d || a.n - b.n)[0]?.id || null;
+}

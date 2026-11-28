@@ -1,4 +1,5 @@
 import { DAYS, blocksOf, upgradeSchedule } from './schedule.js';
+import { findRoom, closestRoom } from '../public/rooms.js';
 
 /** What a signed-in person sees of their own profile. The password never leaves the server. */
 export function toClient(p) {
@@ -18,7 +19,7 @@ export function toExport(p) {
   const schedule = {};
   for (const day of DAYS) {
     const d = p.schedule?.[day];
-    const blocks = d?.enabled ? blocksOf(d).filter((b) => b.rooms?.length) : [];
+    const blocks = d?.enabled ? blocksOf(d).map(withRealRooms).filter((b) => b.rooms.length) : [];
     if (blocks.length) schedule[day] = { blocks };
   }
   return {
@@ -38,6 +39,21 @@ export function toExport(p) {
  */
 export function cleanUsername(username) {
   return String(username ?? '').trim().replace(/@(cmail\.)?carleton\.ca$/i, '');
+}
+
+/**
+ * A saved room that isn't bookable (e.g. "416") is swapped for the closest real
+ * one on the same floor ("420") until the profile is fixed, rather than failing
+ * the booking. Valid rooms keep their order; duplicates are dropped.
+ */
+export function withRealRooms(block) {
+  const rooms = [];
+  const listed = (block.rooms || []).map((r) => findRoom(r)?.id).filter(Boolean);
+  for (const r of block.rooms || []) {
+    const id = findRoom(r)?.id || closestRoom(r, [...listed, ...rooms]);
+    if (id && !rooms.includes(id)) rooms.push(id);
+  }
+  return { ...block, rooms };
 }
 
 export function cleanName(name) {

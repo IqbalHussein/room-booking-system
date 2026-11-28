@@ -1,6 +1,6 @@
 // Study Room Booker — schedule editor. Plain JS, no build step.
 
-import { ROOMS, findRoom } from '/rooms.js';
+import { ROOMS, findRoom, closestRoom } from '/rooms.js';
 
 const DAYS = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
 const DAY_LABEL = Object.fromEntries(DAYS.map((d) => [d, d[0] + d.slice(1).toLowerCase()]));
@@ -157,6 +157,18 @@ function modal({ title, html, confirm = 'OK', cancel = 'Cancel', danger = false 
   });
 }
 
+/** The room the booker uses in place of an invalid saved one (mirrors lib/profiles.js withRealRooms). */
+function standInFor(block, bad) {
+  const listed = block.rooms.map((r) => findRoom(r)?.id).filter(Boolean);
+  const before = [];
+  for (const r of block.rooms) {
+    if (r === bad) return closestRoom(r, [...listed, ...before]);
+    const id = findRoom(r)?.id || closestRoom(r, [...listed, ...before]);
+    if (id) before.push(id);
+  }
+  return null;
+}
+
 /** A hint listing real rooms on the same floor as what was typed. */
 function nearbyRooms(typed) {
   const floor = String(typed).trim()[0];
@@ -196,7 +208,6 @@ function problemsFor(schedule) {
     const multi = d.blocks.length > 1;
     d.blocks.forEach((b, i) => {
       if (!b.rooms.length) list.push(multi ? `Block ${i + 1} needs a room.` : 'Add a room.');
-      for (const r of b.rooms) if (!findRoom(r)) list.push(`${r} isn't a bookable room. Remove it and pick one from the list.`);
     });
     const sorted = [...d.blocks].sort((a, b) => toMin(a.start) - toMin(b.start));
     for (let i = 1; i < sorted.length; i++) {
@@ -489,7 +500,7 @@ function timeline(d, conflicts) {
   const pos = (t) => ((Math.min(Math.max(toMin(t), DAY_START), DAY_END) - DAY_START) / span) * 100;
   const bars = d.enabled ? d.blocks.map((b) => {
     const w = pos(b.end) - pos(b.start);
-    return `<span class="tl-block" style="left:${pos(b.start)}%;width:${w}%">${w >= 15 ? `<span class="tl-label">${esc(b.rooms[0] || '')}</span>` : ''}</span>`;
+    return `<span class="tl-block" style="left:${pos(b.start)}%;width:${w}%">${w >= 15 ? `<span class="tl-label">${esc(b.rooms[0] ? (findRoom(b.rooms[0])?.id || standInFor(b, b.rooms[0]) || b.rooms[0]) : '')}</span>` : ''}</span>`;
   }).join('') : '';
   const marks = conflicts.map((c) => `<span class="tl-clash" style="left:${pos(c.start)}%;width:${pos(c.end) - pos(c.start)}%"></span>`).join('');
   return `<span class="tl" aria-hidden="true">${[9, 12, 15, 18, 21].map((h) => `<span class="tl-tick" style="left:${((h * 60 - DAY_START) / span) * 100}%"></span>`).join('')}${bars}${marks}</span>`;
@@ -515,9 +526,10 @@ function chipsHtml(day, bi, b, clashRooms) {
   return b.rooms.map((room, i) => {
     const clash = clashRooms.has(room.toUpperCase());
     const unknown = !findRoom(room);
-    return `<span class="chip ${unknown ? 'unknown' : clash ? 'conflict' : ''}" ${unknown ? 'title="Not a bookable room"' : ''}>
+    const standIn = unknown ? standInFor(b, room) : null;
+    return `<span class="chip ${unknown ? 'unknown' : clash ? 'conflict' : ''}" ${unknown ? `title="Not a bookable room. ${standIn ? `Booking ${standIn} instead until you change it.` : ''}"` : ''}>
       <span class="rank" aria-label="choice ${i + 1}">${i + 1}</span>
-      <span class="room">${esc(room)}${clash ? ' <span aria-label="wanted by someone else">⚠</span>' : ''}</span>
+      <span class="room">${unknown ? `<s>${esc(room)}</s> → ${esc(standIn || '?')}` : esc(room)}${clash ? ' <span aria-label="wanted by someone else">⚠</span>' : ''}</span>
       <button class="chip-btn" data-act="up" data-day="${day}" data-b="${bi}" data-i="${i}" ${i === 0 ? 'disabled' : ''} aria-label="Try ${esc(room)} earlier">↑</button>
       <button class="chip-btn" data-act="down" data-day="${day}" data-b="${bi}" data-i="${i}" ${i === b.rooms.length - 1 ? 'disabled' : ''} aria-label="Try ${esc(room)} later">↓</button>
       <button class="chip-btn" data-act="rm" data-day="${day}" data-b="${bi}" data-i="${i}" aria-label="Remove ${esc(room)}">✕</button>
@@ -569,6 +581,7 @@ function dayCard(day, conflicts, problems) {
             <button class="btn small" type="submit">Add</button>
           </form>` : ''}
         </div>
+        ${b.rooms.filter((r) => !findRoom(r)).map((r) => `<p class="warn">${esc(r)} isn't a bookable room, so ${esc(standInFor(b, r) || 'the closest room')} is booked instead. Remove ${esc(r)} to choose yourself.</p>`).join('')}
         ${clashes.length ? `<ul class="warn">${clashSummary(clashes)}</ul>` : ''}
       </div>`;
     }).join('');
