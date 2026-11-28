@@ -4,12 +4,13 @@
 // schedule = { MONDAY: { enabled, blocks: [{ start: "HH:MM", end: "HH:MM", rooms: [...] }] }, ... }
 // A day can hold several blocks (e.g. two 90-minute sessions), but LibCal caps
 // one account at DAILY_MAX_MINUTES per day across all of them.
+import { findRoom } from '../public/rooms.js';
+
 export const DAYS = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
 export const DAILY_MAX_MINUTES = 180;
 export const MAX_BLOCKS = 4;
 export const MAX_ROOMS = 5;
 const TIME = /^([01]\d|2[0-3]):(00|30)$/;
-const ROOM = /^[A-Za-z0-9][A-Za-z0-9 .\-]{0,23}$/;
 
 export const toMin = (t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3));
 const label = (day) => day[0] + day.slice(1).toLowerCase();
@@ -45,9 +46,11 @@ export function validateSchedule(input) {
       const seen = new Set();
       const rooms = [];
       for (const r of Array.isArray(b.rooms) ? b.rooms : []) {
-        const room = String(r).trim();
-        if (!room) continue;
-        if (!ROOM.test(room)) return { error: `${name}: "${room}" doesn't look like a room number.` };
+        const typed = String(r).trim();
+        if (!typed) continue;
+        const found = findRoom(typed);
+        if (!found) return { error: `${name}: ${typed} isn't a bookable room. Pick one from the list.` };
+        const room = found.id;
         if (seen.has(room.toUpperCase())) continue;
         seen.add(room.toUpperCase());
         rooms.push(room);
