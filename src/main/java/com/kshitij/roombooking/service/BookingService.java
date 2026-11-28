@@ -541,8 +541,49 @@ public class BookingService {
             wait.until(ExpectedConditions.elementToBeClickable(By.id("submitButton"))).click();
         } catch (Exception e) {
             throw new BookingException(BookingStage.LOGIN,
-                    "Sign-in failed: " + e.getMessage(),
-                    "check BOOKING_USERNAME / BOOKING_PASSWORD, and whether ADFS changed its form", e);
+                    "Couldn't fill in the Carleton sign-in form: " + e.getMessage(),
+                    "The sign-in page may have changed. " + pageSummary(driver), e);
+        }
+
+        // Submitting doesn't mean it worked. Wait until we're either back on
+        // LibCal or the sign-in page shows an error, instead of failing 20s
+        // later at "Continue" with no hint that the login was the problem.
+        try {
+            new WebDriverWait(driver, Duration.ofSeconds(25)).until(d ->
+                    !d.findElements(By.id("errorText")).stream().filter(el -> !el.getText().isBlank()).toList().isEmpty()
+                            || String.valueOf(d.getCurrentUrl()).contains("libcal.com"));
+        } catch (Exception timeout) {
+            throw new BookingException(BookingStage.LOGIN,
+                    "Still on the Carleton sign-in pages 25s after submitting the login.",
+                    "Usually an extra step such as a 2-factor prompt, or a password-change page. " + pageSummary(driver));
+        }
+        List<WebElement> errors = driver.findElements(By.id("errorText"));
+        String error = errors.isEmpty() ? "" : errors.get(0).getText().trim();
+        if (!error.isEmpty()) {
+            throw new BookingException(BookingStage.LOGIN,
+                    "Carleton rejected the sign-in: " + error,
+                    "Check the username and password saved under Settings > Carleton login in the scheduler.");
+        }
+    }
+
+    private static String firstLine(String message) {
+        return message == null ? "" : message.lines().findFirst().orElse("");
+    }
+
+    /**
+     * Where the browser is, for error messages: host, path, title and the page's
+     * main heading. Deliberately no form contents or query strings, which can
+     * carry tokens.
+     */
+    private static String pageSummary(WebDriver driver) {
+        try {
+            java.net.URI uri = java.net.URI.create(driver.getCurrentUrl());
+            String heading = driver.findElements(By.cssSelector("h1, h2")).stream()
+                    .map(WebElement::getText).map(String::trim).filter(t -> !t.isEmpty()).findFirst().orElse("");
+            return "Page: " + uri.getHost() + uri.getPath() + " | title: \"" + driver.getTitle() + "\""
+                    + (heading.isEmpty() ? "" : " | heading: \"" + heading.substring(0, Math.min(120, heading.length())) + "\"");
+        } catch (Exception e) {
+            return "Page: unknown";
         }
     }
 
@@ -557,7 +598,7 @@ public class BookingService {
                     By.xpath("//button[contains(text(), 'Submit my Booking')]"))).click();
         } catch (Exception e) {
             throw new BookingException(BookingStage.CONFIRM,
-                    "Could not confirm the booking: " + e.getMessage(), null, e);
+                    "Could not confirm the booking: " + firstLine(e.getMessage()), pageSummary(driver), e);
         }
     }
 }
